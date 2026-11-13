@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Запропонувати автомобіль — AutoGallery</title>
+  <link rel="preload" href="/autogallery-preview/inter-variable.ttf" as="font" type="font/ttf" crossorigin>
+  <link rel="stylesheet" href="/autogallery-preview/site.css?v=home-20261113">
+  
+<meta name="robots" content="noindex,nofollow"><script src="/autogallery-preview/preview.js" defer></script><meta property="og:title" content="AutoGallery — перегляд сайту"><meta property="og:description" content="Головна, відео та демонстраційний каталог AutoGallery."><meta property="og:image" content="https://kanyeeebear.github.io/autogallery-preview/poster.jpg"></head>
+<body class="">
+  <a class="skip-link" href="#main">Перейти до вмісту</a>
+  <div class="demo-strip">Демо-макет — не актуальні пропозиції</div>
+  <header class="site-header">
+    <a class="wordmark" href="/autogallery-preview/index.html" aria-label="AutoGallery — головна">AutoGallery</a>
+    <nav class="primary-nav" aria-label="Основна навігація">
+      <a href="/autogallery-preview/cars.html">Купити авто</a>
+      <a href="/autogallery-preview/sell.html" aria-current="page">Продати авто</a>
+      <a href="/autogallery-preview/enquiry.html">Під замовлення</a>
+    </nav>
+    <span class="header-location"><svg viewbox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12 2a7 7 0 0 0-7 7c0 5 7 13 7 13s7-8 7-13a7 7 0 0 0-7-7Zm0 10a3 3 0 1 1 0-6 3 3 0 0 1 0 6Z"></svg>Київ</span>
+    <a class="header-offer" href="/autogallery-preview/sell.html">Викуп, комісія та trade-in</a>
+  </header>
+  <main id="main">
+<div class="page-shell lead-page">
+  <a class="back-link" href="/autogallery-preview/cars.html">До каталогу</a>
+  <div class="lead-layout">
+    <div class="lead-intro"><h1>Запропонувати автомобіль</h1><p>Оберіть викуп, комісійний продаж або обмін та розкажіть про своє авто. Фото необов’язкові.</p>
+      
+      <p class="contact-note">Ваші контактні дані потрібні менеджеру для відповіді на заявку.</p>
+    </div>
+    <form method="get" enctype="multipart/form-data" class="lead-form" action="#preview-form" data-preview-readonly="true"><p class="notice">Це перегляд форми. Надсилання заявок та завантаження фото у демонстрації вимкнено.</p>
+      
+      
+      
+      
+      
+      <div class="lead-fields">
+        <div class="form-field field-wide"><label for="id_seller_mode">Спосіб продажу:</label><select name="seller_mode" required id="id_seller_mode" disabled>
+  <option value="" selected>---------</option>
+
+  <option value="buyout">Викуп</option>
+
+  <option value="commission">Комісійний продаж</option>
+
+  <option value="trade_in">Обмін (trade-in)</option>
+
+</select></div>
+      
+        <div class="form-field"><label for="id_seller_brand">Марка:</label><input type="text" name="seller_brand" maxlength="100" required id="id_seller_brand" disabled></div>
+      
+        <div class="form-field"><label for="id_seller_model">Модель:</label><input type="text" name="seller_model" maxlength="100" required id="id_seller_model" disabled></div>
+      
+        <div class="form-field"><label for="id_seller_year">Рік:</label><input type="number" name="seller_year" min="0" required id="id_seller_year" disabled></div>
+      
+        <div class="form-field"><label for="id_seller_mileage_km">Пробіг, км:</label><input type="number" name="seller_mileage_km" min="0" required id="id_seller_mileage_km" disabled></div>
+      
+        <div class="form-field"><label for="id_expected_price">Очікувана ціна:</label><input type="number" name="expected_price" step="0.01" aria-describedby="id_expected_price_helptext" id="id_expected_price" disabled><p class="helptext" id="id_expected_price_helptext">Необов’язково. Вкажіть валюту окремо.</p></div>
+      
+        <div class="form-field"><label for="id_currency">Валюта:</label><select name="currency" required id="id_currency" disabled>
+  <option value="" selected>---------</option>
+
+  <option value="USD">USD</option>
+
+  <option value="EUR">EUR</option>
+
+  <option value="UAH">UAH</option>
+
+</select></div>
+      
+        <div class="form-field"><label for="id_name">Ім’я:</label><input type="text" name="name" autocomplete="name" maxlength="100" id="id_name" disabled></div>
+      
+        <div class="form-field"><label for="id_phone">Телефон:</label><input type="tel" name="phone" autocomplete="tel" maxlength="40" required id="id_phone" disabled></div>
+      
+        <div class="form-field field-wide"><label for="id_message">Повідомлення:</label><textarea name="message" cols="40" rows="5" maxlength="4000" id="id_message" disabled>
+</textarea></div>
+      
+        <div class="consent-field"><input type="checkbox" name="consent" required id="id_consent" disabled><label for="id_consent">Погоджуюся на обробку контактних даних для відповіді на цю заявку</label></div>
+        
+      
+        <div hidden aria-hidden="true"><label for="id_website">Залиште це поле порожнім:</label><input type="text" name="website" tabindex="-1" autocomplete="off" maxlength="200" id="id_website" disabled></div>
+        
+      
+        <div class="form-field field-wide"><label for="id_photos">Фото автомобіля:</label><input type="file" name="photos" accept="image/jpeg,image/png,image/webp" multiple aria-describedby="id_photos_helptext" id="id_photos" disabled><p class="helptext" id="id_photos_helptext">До 6 фото JPG, PNG або WebP. До 12 МБ кожне та до 30 МБ разом.</p></div>
+      
+        
+        
+      
+        
+        
+      
+        
+        
+      
+        
+        
+      
+        
+        
+      </div>
+      <button type="submit" class="button primary" disabled>Надіслати заявку</button>
+    </form>
+  </div>
+</div>
+</main>
+  <footer class="site-footer">
+    <span>Дизайн-концепт · демонстраційні зображення</span>
+    <nav id="contacts" class="footer-contacts" aria-labelledby="footer-contacts-heading">
+      <h2 id="footer-contacts-heading" class="footer-contacts-title">Контакти</h2>
+      <a href="https://www.instagram.com/auto_gallery_official/" target="_blank" rel="noopener noreferrer">Instagram</a>
+      <a href="https://t.me/Autogallery_official" target="_blank" rel="noopener noreferrer">Telegram-канал</a>
+    </nav>
+    
+  </footer>
+</body>
+</html>
