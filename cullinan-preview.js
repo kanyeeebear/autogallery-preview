@@ -124,7 +124,8 @@
   function measure() {
     if (!active) return;
     if (viewportWidth <= 800 && viewportWidth === document.documentElement.clientWidth &&
-        Math.abs(window.innerHeight - viewportHeight) < 140) { schedule(); return; }
+        Math.abs(window.innerHeight - viewportHeight) < 140 &&
+        (!manifest || filmKey === wantedFilmKey())) { schedule(); return; }
     const oldTravel = travel;
     const oldProgress = oldTravel ? clamp((window.scrollY - sceneTop) / oldTravel) : 0;
     const catalogOffset = Math.max(0, window.scrollY - sceneTop - oldTravel);
