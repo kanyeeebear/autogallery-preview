@@ -21,11 +21,17 @@
   let ready = false;
   let released = false;
   let config;
+  // Poster proportions for upright phones, known from the page before the manifest arrives.
+  let posterSize;
   let viewportWidth = 0;
   let viewportHeight = 0;
   let travel = 0;
   let sceneTop = 0;
+  // `target` follows the scroll position; `progress` eases towards it so that
+  // wheel ticks and touch flicks scrub the film without visible steps.
+  let target = 0;
   let progress = 0;
+  let lastFrame = 0;
   let wantedTime = 0;
   let lastSeekTime = -1;
   let mediaObjectURL;
@@ -36,6 +42,9 @@
   const clamp = (value, low = 0, high = 1) => Math.min(high, Math.max(low, value));
   const mix = (a, b, amount) => a + (b - a) * amount;
   const easeOut = value => value >= 1 ? 1 : 1 - Math.pow(2, -10 * value);
+  const easeInOut = value => value < 0.5 ? 4 * value * value * value : 1 - Math.pow(-2 * value + 2, 3) / 2;
+  const SMOOTHING = 110; // milliseconds for the eased progress to close most of a gap
+  const DEFAULT_FILM_END = 0.76;
 
   function focusCatalog() {
     if (title) {
@@ -72,7 +81,9 @@
     catalog.removeAttribute('aria-hidden');
     catalog.removeAttribute('style');
     anchor.style.removeProperty('min-height');
-    body.classList.remove('cullinan-enhanced', 'cullinan-released', 'cullinan-instrument');
+    body.classList.remove('cullinan-enhanced', 'cullinan-released', 'cullinan-instrument', 'cullinan-entering', 'cullinan-portrait', 'cullinan-immersed');
+    scene.style.removeProperty('--cullinan-chrome');
+    scene.style.removeProperty('--cullinan-actions');
     body.style.removeProperty('--cullinan-height');
     body.style.removeProperty('--cullinan-travel');
     for (const {node, marker} of moved) marker.replaceWith(node);
@@ -90,7 +101,7 @@
     if (released === value) return;
     released = value;
     body.classList.toggle('cullinan-released', value);
-    if (value) body.classList.remove('cullinan-instrument');
+    if (value) body.classList.remove('cullinan-instrument', 'cullinan-entering', 'cullinan-immersed');
     if (!value && catalog.contains(document.activeElement)) skip.focus({preventScroll: true});
     catalog.inert = !value;
     if (value) {
@@ -109,7 +120,7 @@
     const catalogOffset = Math.max(0, window.scrollY - sceneTop - oldTravel);
     viewportWidth = document.documentElement.clientWidth;
     viewportHeight = window.innerHeight;
-    travel = Math.round(viewportHeight * (viewportWidth <= 800 ? 1.25 : 1.75));
+    travel = Math.round(viewportHeight * (viewportWidth <= 800 ? 1.5 : 2));
     body.style.setProperty('--cullinan-height', `${viewportHeight}px`);
     body.style.setProperty('--cullinan-travel', `${travel}px`);
     sceneTop = scene.getBoundingClientRect().top + window.scrollY;
@@ -120,20 +131,48 @@
     } else if (oldTravel && oldProgress > 0) {
       window.scrollTo({top: sceneTop + oldProgress * travel, behavior: 'instant'});
     }
+    placeFilm();
     schedule();
+  }
+
+  // Share of the film already played, independent of the closing expansion.
+  function filmProgress() {
+    return clamp(progress / (config ? config.expandStartProgress : DEFAULT_FILM_END));
   }
 
   function filmRect() {
     const small = viewportWidth <= 800;
-    const zoom = small ? 1 + 0.24 * easeOut(clamp(progress / 0.7)) : 1;
-    const scale = Math.min(viewportWidth / video.videoWidth, viewportHeight / video.videoHeight) * zoom;
-    const width = video.videoWidth * scale;
-    const height = video.videoHeight * scale;
-    return {width, height, x: (viewportWidth - width) / 2,
-      y: (viewportHeight - height) / 2 + (small ? 30 * (1 - clamp(progress / 0.5)) : 0)};
+    const played = filmProgress();
+    // The poster has the film's proportions, so the frame is known before the clip loads.
+    const size = (config && config.dimensions) || posterSize || [1920, 1080];
+    const sourceWidth = video.videoWidth || size[0];
+    const sourceHeight = video.videoHeight || size[1];
+    const contain = Math.min(viewportWidth / sourceWidth, viewportHeight / sourceHeight);
+    let zoom = 1;
+    let lift = 0;
+    if (sourceHeight > sourceWidth) {
+      // An upright film starts whole and grows until it covers the phone.
+      const cover = Math.max(viewportWidth / sourceWidth, viewportHeight / sourceHeight) / contain;
+      zoom = 1 + (Math.min(cover, 1.3) - 1) * easeOut(clamp(played / 0.6));
+    } else if (small) {
+      zoom = 1 + 0.24 * easeOut(clamp(played / 0.8));
+      lift = 30 * (1 - clamp(played / 0.55));
+    }
+    const width = sourceWidth * contain * zoom;
+    const height = sourceHeight * contain * zoom;
+    return {width, height, x: (viewportWidth - width) / 2, y: (viewportHeight - height) / 2 + lift};
+  }
+
+  function placeFilm() {
+    if (!active || released || !viewportWidth) return;
+    const frame = filmRect();
+    Object.assign(video.style, {width: `${frame.width}px`, height: `${frame.height}px`,
+      left: `${frame.x}px`, top: `${frame.y}px`});
   }
 
   function screenQuad(time) {
+    // A film that ends inside the display hands over the whole viewport.
+    if (config.portalFill) return [[0, 0], [viewportWidth, 0], [viewportWidth, viewportHeight], [0, viewportHeight]];
     const frames = config.portalKeyframes;
     let first = frames[0];
     let last = frames[frames.length - 1];
@@ -186,14 +225,27 @@
     if (!active || !ready || released) return;
     const portalVisible = clamp((time - config.portalStart) / config.portalFadeDuration);
     const expansion = clamp((progress - config.expandStartProgress) / (1 - config.expandStartProgress));
-    const amount = easeOut(expansion);
-    body.classList.toggle('cullinan-instrument', expansion === 0);
-    const frame = filmRect();
-    Object.assign(video.style, {width: `${frame.width}px`, height: `${frame.height}px`,
-      left: `${frame.x}px`, top: `${frame.y}px`});
+    const amount = easeInOut(expansion);
+    const played = filmProgress();
+    const covering = config.portalFill ? portalVisible : 0;
+    const instrument = expansion === 0 && !config.portalFill;
+    if (instrument !== body.classList.contains('cullinan-instrument')) {
+      body.classList.toggle('cullinan-instrument', instrument);
+      // Phones swap the compact display layout for the real page; soften that cut.
+      if (viewportWidth <= 800 && portalVisible === 1 && catalog.animate) {
+        catalog.animate([{opacity: 0.2}, {opacity: 1}], {duration: 240, easing: 'ease-out'});
+      }
+    }
+    // The stage controls leave as the page takes over, instead of showing around it.
+    body.classList.toggle('cullinan-entering', expansion >= 0.3 || covering >= 0.5);
+    scene.style.setProperty('--cullinan-chrome', String(1 - Math.max(clamp(expansion / 0.3), clamp(covering * 2))));
+    // A full-screen film should not play behind the two large buttons; the skip link stays.
+    const immersed = config.upright ? clamp((played - 0.12) / 0.2) : 0;
+    scene.style.setProperty('--cullinan-actions', String(1 - immersed));
+    body.classList.toggle('cullinan-immersed', immersed >= 1);
     if (intro) {
-      intro.style.opacity = String(1 - clamp(progress / 0.24));
-      intro.style.visibility = progress >= 0.24 ? 'hidden' : 'visible';
+      intro.style.opacity = String(1 - clamp(played / 0.28));
+      intro.style.visibility = played >= 0.28 ? 'hidden' : 'visible';
     }
     const quad = screenQuad(time);
     const full = [[0, 0], [viewportWidth, 0], [viewportWidth, viewportHeight], [0, viewportHeight]];
@@ -208,7 +260,7 @@
     catalog.style.height = `${surfaceHeight}px`;
     catalog.style.transform = project(expanded, surfaceHeight);
     catalog.style.opacity = String(expansion > 0 ? 1 : portalVisible);
-    cue.style.opacity = String(1 - clamp(progress / 0.3));
+    cue.style.opacity = String(1 - clamp(played / 0.12));
   }
 
   function seek() {
@@ -227,15 +279,29 @@
     }
   }
 
-  function render() {
+  function render(now) {
     raf = 0;
     if (!active) return;
-    progress = clamp((window.scrollY - sceneTop) / travel);
-    setReleased(progress >= 1);
-    if (!ready || released) return;
-    wantedTime = Math.min(config.duration, video.duration - 0.04) * clamp(progress / config.expandStartProgress);
-    seek();
-    renderPortal(video.currentTime);
+    target = clamp((window.scrollY - sceneTop) / travel);
+    setReleased(target >= 1);
+    if (released) {
+      progress = 1;
+      lastFrame = 0;
+      return;
+    }
+    // A long gap between frames (a throttled or background tab) simply lands on the target.
+    const elapsed = lastFrame ? now - lastFrame : 16;
+    lastFrame = now;
+    const gap = target - progress;
+    progress = Math.abs(gap) < 0.0004 ? target : progress + gap * (1 - Math.exp(-elapsed / SMOOTHING));
+    placeFilm();
+    if (ready) {
+      wantedTime = Math.min(config.duration, video.duration - 0.04) * filmProgress();
+      seek();
+      renderPortal(video.currentTime);
+    }
+    if (progress === target) lastFrame = 0;
+    else schedule();
   }
 
   function schedule() {
@@ -243,20 +309,32 @@
   }
 
   function validateManifest(data) {
-    const frames = data.portalKeyframes;
+    const portalFill = data.portal === 'viewport';
+    const frames = portalFill ? [] : data.portalKeyframes;
+    const size = data.dimensions;
     if (typeof data.video !== 'string' || !Number.isFinite(data.duration) || data.duration <= 0 ||
+        (data.videoMobile !== undefined && typeof data.videoMobile !== 'string') ||
+        (size !== undefined && !(Array.isArray(size) && size.length === 2 && size.every(side => Number.isFinite(side) && side > 0))) ||
         !Number.isFinite(data.portalStart) || data.portalStart < 0 || data.portalStart >= data.duration ||
-        !Array.isArray(frames) || !frames.length || frames.some(frame =>
+        !Array.isArray(frames) || (!portalFill && !frames.length) || frames.some(frame =>
           !Number.isFinite(frame.time) || !Array.isArray(frame.quad) || frame.quad.length !== 4 ||
           frame.quad.some(point => !Array.isArray(point) || point.length !== 2 || !point.every(Number.isFinite)))) {
       throw new Error('Incomplete cinematic manifest');
     }
+    const remaining = data.duration - data.portalStart;
     return {
       ...data,
+      portalFill,
       portalKeyframes: [...frames].sort((a, b) => a.time - b.time),
-      expandStartProgress: clamp(Number.isFinite(data.expandStartProgress) ? data.expandStartProgress : 0.87, 0.75, 0.95),
-      portalFadeDuration: Math.max(0.08, Math.min(0.25, (data.duration - data.portalStart) / 3)),
+      expandStartProgress: clamp(Number.isFinite(data.expandStartProgress) ? data.expandStartProgress : DEFAULT_FILM_END, 0.6, 0.95),
+      // The full-viewport handover may take the film's whole closing stretch.
+      portalFadeDuration: portalFill ? Math.max(0.08, remaining * 0.9) : Math.max(0.08, Math.min(0.25, remaining / 3)),
     };
+  }
+
+  function uprightPhone() {
+    const width = document.documentElement.clientWidth;
+    return width <= 800 && window.innerHeight > width * 1.2;
   }
 
   function assetURL(path) {
@@ -274,6 +352,13 @@
   moveIntoCatalog(document.querySelector('.site-footer'));
   scene.hidden = false;
   body.classList.add('cullinan-enhanced');
+  if (uprightPhone() && scene.dataset.portraitPoster) {
+    const size = (scene.dataset.portraitSize || '').split('x').map(Number);
+    if (size.length === 2 && size.every(side => Number.isFinite(side) && side > 0)) {
+      posterSize = size;
+      video.poster = scene.dataset.portraitPoster;
+    }
+  }
   catalog.inert = true;
   catalog.setAttribute('aria-hidden', 'true');
   scene.querySelectorAll('.cullinan-skip').forEach(link =>
@@ -314,10 +399,26 @@
     .then(data => {
       if (!active) return;
       config = validateManifest(data);
-      if (config.poster) video.poster = assetURL(config.poster);
+      if (data.portrait && uprightPhone()) {
+        // Upright phones get their own film, with its own timings and handover.
+        try {
+          config = {...validateManifest(data.portrait), upright: true};
+        } catch (_) { /* keep the landscape film */ }
+      }
+      if (!config.upright) posterSize = undefined;
+      body.classList.toggle('cullinan-portrait', Boolean(config.upright));
+      if (config.poster) {
+        const poster = assetURL(config.poster);
+        if (video.poster !== poster) video.poster = poster;
+      }
+      placeFilm();
       // The local Django static server does not provide byte-range seeking.
       // Load this short clip once; an object URL provides reliable local scrubbing.
-      return fetch(assetURL(config.video), {signal: abort.signal, cache: 'force-cache'})
+      // Other phones get a lighter encode of the landscape frames, so the timings are shared.
+      const clip = !config.upright && config.videoMobile && document.documentElement.clientWidth <= 800 ? config.videoMobile : config.video;
+      // The clip is kept in the browser cache; a new revision in the manifest replaces it.
+      const revision = typeof data.revision === 'string' && data.revision ? `?v=${encodeURIComponent(data.revision)}` : '';
+      return fetch(assetURL(clip) + revision, {signal: abort.signal, cache: 'force-cache'})
         .then(response => {
           if (!response.ok) throw new Error('Cinematic video unavailable');
           return response.blob();

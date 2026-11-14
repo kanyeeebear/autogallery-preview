@@ -14,13 +14,23 @@ html:has(.cullinan-enhanced){scroll-behavior:auto}
 .cullinan-intro p{margin-top:14px;color:var(--muted);font-size:18px;max-width:36ch}
 .cullinan-actions{position:absolute;z-index:2;bottom:68px;left:40px;display:flex;gap:12px}
 .cullinan-actions .button{min-height:48px;padding:12px 24px}
+/* The film passes behind these controls, so the secondary one needs its own surface. */
+.cullinan-actions .outline{background:var(--paper)}.cullinan-actions .outline:hover{background:#eaf0ec}
 .cullinan-caption{position:absolute;bottom:20px;left:40px;right:40px;display:flex;align-items:center;justify-content:space-between;gap:20px;color:var(--muted)}
 .cullinan-scroll-cue{display:none;align-items:center;gap:10px;font-size:14px;color:var(--ink)}
+.cullinan-scroll-cue svg{animation:cullinan-nudge 1.8s ease-in-out infinite}
+@keyframes cullinan-nudge{0%,100%{transform:translateY(-2px)}50%{transform:translateY(3px)}}
 .cullinan-demo{font-size:12px;margin-left:auto}
-.cullinan-enhanced{--cullinan-height:100svh;--cullinan-travel:175svh;background:var(--paper)}
+.cullinan-enhanced{--cullinan-height:100svh;--cullinan-travel:200svh;background:var(--paper)}
 .cullinan-enhanced .cullinan-scene{height:var(--cullinan-travel);min-height:0}
 .cullinan-enhanced .cullinan-stage{position:fixed;inset:0;z-index:20;height:var(--cullinan-height)}
 .cullinan-enhanced .cullinan-toolbar,.cullinan-enhanced .cullinan-scroll-cue{display:flex}
+/* The letterboxed film dissolves into the studio white instead of ending on a hard edge. */
+.cullinan-enhanced .cullinan-film{-webkit-mask-image:linear-gradient(to bottom,transparent,#000 7%,#000 93%,transparent);mask-image:linear-gradient(to bottom,transparent,#000 7%,#000 93%,transparent)}
+/* Script fades the stage controls out while the catalogue grows over them. */
+.cullinan-enhanced .cullinan-toolbar,.cullinan-enhanced .cullinan-caption{opacity:var(--cullinan-chrome,1)}
+.cullinan-enhanced .cullinan-actions{opacity:calc(var(--cullinan-chrome,1)*var(--cullinan-actions,1))}
+.cullinan-entering .cullinan-toolbar,.cullinan-entering .cullinan-actions,.cullinan-entering .cullinan-caption,.cullinan-immersed .cullinan-actions{pointer-events:none}
 .cullinan-enhanced .cullinan-intro{top:116px}
 .cullinan-enhanced #cullinan-catalog{position:fixed;top:0;left:0;z-index:21;width:100%;height:var(--cullinan-height);overflow:hidden;transform-origin:0 0;opacity:0;pointer-events:none;background:var(--page);will-change:transform}
 .cullinan-enhanced #cullinan-catalog .catalog-layout{padding-top:1px}
@@ -44,6 +54,7 @@ html:has(.cullinan-enhanced){scroll-behavior:auto}
 @media(max-width:1000px){.home-services{gap:40px;padding:48px 24px}.home-visit{margin:0 24px;padding:32px}.home-page .catalog-results>h2{font-size:40px}}
 @media(max-width:800px){
  .cullinan-scene{height:calc(100svh - 112px);min-height:560px}
+ .cullinan-enhanced .cullinan-film{-webkit-mask-image:linear-gradient(to bottom,transparent,#000 12%,#000 88%,transparent);mask-image:linear-gradient(to bottom,transparent,#000 12%,#000 88%,transparent)}
  .cullinan-toolbar{padding:18px 20px;gap:12px}.cullinan-wordmark{font-size:26px}.cullinan-location{display:none}.cullinan-toolbar .cullinan-skip{margin-left:auto;font-size:14px;padding:10px 12px}
  .cullinan-intro{top:28px;left:20px;right:20px}.cullinan-enhanced .cullinan-intro{top:108px}
  .cullinan-intro h1{font-size:40px;max-width:14ch}.cullinan-intro p{font-size:16px;max-width:25ch;margin-top:16px}
@@ -62,7 +73,7 @@ html:has(.cullinan-enhanced){scroll-behavior:auto}
 @media(max-width:360px){.cullinan-intro h1{font-size:34px}.cullinan-actions{left:16px;right:16px;gap:8px}.cullinan-actions .button{font-size:13px}.cullinan-wordmark{font-size:24px}}
 @media(max-height:620px) and (min-width:801px){.cullinan-intro{display:none}.cullinan-actions{bottom:50px}.cullinan-caption{bottom:12px}}
 @media(orientation:landscape) and (max-height:520px){.cullinan-intro{display:none}.cullinan-actions{left:auto;right:20px;bottom:18px;display:flex}.cullinan-caption{right:auto;bottom:20px}.cullinan-demo{display:none}.cullinan-toolbar{padding:12px 20px}}
-@media(prefers-reduced-motion:reduce){.cullinan-scroll-cue{display:none}.cullinan-enhanced #cullinan-catalog{position:static;height:auto;overflow:visible;transform:none!important;opacity:1!important;pointer-events:auto;will-change:auto}}
+@media(prefers-reduced-motion:reduce){.cullinan-scroll-cue{display:none}.cullinan-scroll-cue svg{animation:none}.cullinan-enhanced #cullinan-catalog{position:static;height:auto;overflow:visible;transform:none!important;opacity:1!important;pointer-events:auto;will-change:auto}}
 
 @media(max-width:800px) and (max-height:740px){.cullinan-enhanced .cullinan-intro{top:96px}.cullinan-intro h1{font-size:34px;max-width:14ch}.cullinan-intro p{margin-top:12px;max-width:100%}}
 @media(max-width:800px) and (max-height:620px){.cullinan-enhanced .cullinan-intro{top:86px}.cullinan-intro h1{font-size:30px}.cullinan-intro p{font-size:14px;line-height:1.5}}
