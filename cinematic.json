@@ -1,8 +1,15 @@
 {
-  "revision": "20261114-1",
+  "revision": "20261114-2",
   "video": "master.mp4",
-  "videoMobile": "master-mobile.mp4",
   "poster": "poster.jpg",
+  "frames": {
+    "pattern": "landscape-{index}.webp",
+    "count": 122,
+    "dimensions": [
+      1280,
+      720
+    ]
+  },
   "duration": 8.1,
   "portalStart": 7.55,
   "expandStartProgress": 0.76,
@@ -60,7 +67,15 @@
     "duration": 8.04,
     "portalStart": 7.5,
     "portal": "viewport",
-    "expandStartProgress": 0.95
+    "expandStartProgress": 0.95,
+    "frames": {
+      "pattern": "portrait-{index}.webp",
+      "count": 129,
+      "dimensions": [
+        864,
+        1536
+      ]
+    }
   },
   "provenance": {
     "source": "Higgsfield Seedance 2.5",

@@ -35,6 +35,8 @@
   let wantedTime = 0;
   let lastSeekTime = -1;
   let mediaObjectURL;
+  // Touch devices scrub numbered stills on a canvas; see startSequence().
+  let sequence;
   let raf = 0;
   let resizeFrame = 0;
   let loadingTimer;
@@ -70,6 +72,7 @@
     clearTimeout(loadingTimer);
     cancelAnimationFrame(raf);
     cancelAnimationFrame(resizeFrame);
+    stopSequence();
     video.pause();
     video.removeAttribute('src');
     video.load();
@@ -144,9 +147,9 @@
     const small = viewportWidth <= 800;
     const played = filmProgress();
     // The poster has the film's proportions, so the frame is known before the clip loads.
-    const size = (config && config.dimensions) || posterSize || [1920, 1080];
-    const sourceWidth = video.videoWidth || size[0];
-    const sourceHeight = video.videoHeight || size[1];
+    const size = (sequence && sequence.size) || (config && config.dimensions) || posterSize || [1920, 1080];
+    const sourceWidth = (!sequence && video.videoWidth) || size[0];
+    const sourceHeight = (!sequence && video.videoHeight) || size[1];
     const contain = Math.min(viewportWidth / sourceWidth, viewportHeight / sourceHeight);
     let zoom = 1;
     let lift = 0;
@@ -166,8 +169,90 @@
   function placeFilm() {
     if (!active || released || !viewportWidth) return;
     const frame = filmRect();
-    Object.assign(video.style, {width: `${frame.width}px`, height: `${frame.height}px`,
-      left: `${frame.x}px`, top: `${frame.y}px`});
+    const box = {width: `${frame.width}px`, height: `${frame.height}px`, left: `${frame.x}px`, top: `${frame.y}px`};
+    Object.assign(video.style, box);
+    if (sequence) Object.assign(sequence.canvas.style, box);
+  }
+
+  // Phones and tablets do not reliably paint frames of a paused video, so the same film
+  // is delivered there as numbered stills. Drawing one is instant and needs no media policy.
+  function startSequence(spec, revision) {
+    const canvas = document.createElement('canvas');
+    canvas.className = 'cullinan-film';
+    canvas.width = spec.dimensions[0];
+    canvas.height = spec.dimensions[1];
+    canvas.setAttribute('aria-hidden', 'true');
+    // Coarse first: the whole film can be scrubbed early, then it fills in.
+    const order = [];
+    for (const step of [16, 8, 4, 2, 1]) {
+      for (let index = 0; index < spec.count; index += step) if (!order.includes(index)) order.push(index);
+    }
+    sequence = {canvas, context: canvas.getContext('2d'), size: spec.dimensions, count: spec.count, order,
+      images: new Array(spec.count), loaded: new Array(spec.count).fill(false), pending: 0, failed: 0, shown: -1,
+      revision, address: index => assetURL(spec.pattern.replace('{index}', String(index).padStart(3, '0'))) + revision};
+    loadFrames();
+  }
+
+  function loadFrames() {
+    while (sequence && sequence.pending < 6 && sequence.order.length) {
+      const film = sequence;
+      const index = film.order.shift();
+      const image = new Image();
+      film.images[index] = image;
+      film.pending += 1;
+      image.onload = () => {
+        if (sequence !== film) return;
+        film.pending -= 1;
+        film.loaded[index] = true;
+        if (index === 0) {
+          // The first still replaces the poster; from here the scene can be scrubbed.
+          video.after(film.canvas);
+          clearTimeout(loadingTimer);
+          ready = true;
+          measure();
+        }
+        loadFrames();
+        schedule();
+      };
+      image.onerror = () => {
+        if (sequence !== film) return;
+        film.pending -= 1;
+        film.failed += 1;
+        // Without its opening still, or with many gaps, fall back to the video file.
+        if (index === 0 || film.failed > 6) {
+          stopSequence();
+          loadClip(film.revision);
+        } else loadFrames();
+      };
+      image.src = film.address(index);
+    }
+  }
+
+  function drawSequence(time) {
+    const film = sequence;
+    const wanted = Math.round(clamp(time / config.duration) * (film.count - 1));
+    // Until every still has arrived, show the closest one that has.
+    let best = -1;
+    for (let offset = 0; offset < film.count && best < 0; offset += 1) {
+      if (film.loaded[wanted - offset]) best = wanted - offset;
+      else if (film.loaded[wanted + offset]) best = wanted + offset;
+    }
+    if (best < 0 || best === film.shown) return;
+    film.context.drawImage(film.images[best], 0, 0, film.canvas.width, film.canvas.height);
+    film.shown = best;
+  }
+
+  function stopSequence() {
+    if (!sequence) return;
+    for (const image of sequence.images) {
+      if (image) {
+        image.onload = null;
+        image.onerror = null;
+        image.src = '';
+      }
+    }
+    sequence.canvas.remove();
+    sequence = undefined;
   }
 
   function screenQuad(time) {
@@ -264,7 +349,7 @@
   }
 
   function seek() {
-    if (!active || !ready || video.seeking) return;
+    if (!active || !ready || sequence || video.seeking) return;
     let seekable = false;
     for (let index = 0; index < video.seekable.length; index += 1) {
       const start = video.seekable.start(index);
@@ -295,7 +380,11 @@
     const gap = target - progress;
     progress = Math.abs(gap) < 0.0004 ? target : progress + gap * (1 - Math.exp(-elapsed / SMOOTHING));
     placeFilm();
-    if (ready) {
+    if (ready && sequence) {
+      wantedTime = config.duration * filmProgress();
+      drawSequence(wantedTime);
+      renderPortal(wantedTime);
+    } else if (ready) {
       wantedTime = Math.min(config.duration, video.duration - 0.04) * filmProgress();
       seek();
       renderPortal(video.currentTime);
@@ -310,22 +399,27 @@
 
   function validateManifest(data) {
     const portalFill = data.portal === 'viewport';
-    const frames = portalFill ? [] : data.portalKeyframes;
+    const keyframes = portalFill ? [] : data.portalKeyframes;
     const size = data.dimensions;
     if (typeof data.video !== 'string' || !Number.isFinite(data.duration) || data.duration <= 0 ||
-        (data.videoMobile !== undefined && typeof data.videoMobile !== 'string') ||
         (size !== undefined && !(Array.isArray(size) && size.length === 2 && size.every(side => Number.isFinite(side) && side > 0))) ||
         !Number.isFinite(data.portalStart) || data.portalStart < 0 || data.portalStart >= data.duration ||
-        !Array.isArray(frames) || (!portalFill && !frames.length) || frames.some(frame =>
+        !Array.isArray(keyframes) || (!portalFill && !keyframes.length) || keyframes.some(frame =>
           !Number.isFinite(frame.time) || !Array.isArray(frame.quad) || frame.quad.length !== 4 ||
           frame.quad.some(point => !Array.isArray(point) || point.length !== 2 || !point.every(Number.isFinite)))) {
       throw new Error('Incomplete cinematic manifest');
     }
     const remaining = data.duration - data.portalStart;
+    const stills = data.frames;
+    const frames = stills && typeof stills.pattern === 'string' && stills.pattern.includes('{index}') &&
+      Number.isInteger(stills.count) && stills.count >= 2 && stills.count <= 400 &&
+      Array.isArray(stills.dimensions) && stills.dimensions.length === 2 &&
+      stills.dimensions.every(side => Number.isFinite(side) && side > 0) ? stills : undefined;
     return {
       ...data,
+      frames,
       portalFill,
-      portalKeyframes: [...frames].sort((a, b) => a.time - b.time),
+      portalKeyframes: [...keyframes].sort((a, b) => a.time - b.time),
       expandStartProgress: clamp(Number.isFinite(data.expandStartProgress) ? data.expandStartProgress : DEFAULT_FILM_END, 0.6, 0.95),
       // The full-viewport handover may take the film's whole closing stretch.
       portalFadeDuration: portalFill ? Math.max(0.08, remaining * 0.9) : Math.max(0.08, Math.min(0.25, remaining / 3)),
@@ -344,6 +438,26 @@
       throw new Error('Unexpected cinematic media origin');
     }
     return url.href;
+  }
+
+  // The local Django static server does not provide byte-range seeking.
+  // Load this short clip once; an object URL provides reliable local scrubbing.
+  function loadClip(revision) {
+    fetch(assetURL(config.video) + revision, {signal: abort.signal, cache: 'force-cache'})
+      .then(response => {
+        if (!response.ok) throw new Error('Cinematic video unavailable');
+        return response.blob();
+      })
+      .then(blob => {
+        if (!active) return;
+        if (!blob.size) throw new Error('Cinematic video is empty');
+        mediaObjectURL = URL.createObjectURL(blob);
+        video.src = mediaObjectURL;
+        video.load();
+      })
+      .catch(() => {
+        if (active) showRegularCatalog(scene.contains(document.activeElement));
+      });
   }
 
   // Progressive enhancement starts with the poster, and has a bounded fallback.
@@ -374,11 +488,12 @@
   }, {signal: abort.signal});
   video.addEventListener('error', () => showRegularCatalog(scene.contains(document.activeElement)), {signal: abort.signal});
   video.addEventListener('seeked', () => {
+    if (sequence) return;
     renderPortal(video.currentTime);
     seek();
   }, {signal: abort.signal});
   const readyWhenSeekable = () => {
-    if (ready || !active || video.readyState < 2) return;
+    if (ready || !active || sequence || video.readyState < 2) return;
     if (!config || !video.videoWidth || !video.videoHeight || !Number.isFinite(video.duration)) return showRegularCatalog();
     // Retain the loading timeout until this browser can actually scrub the clip.
     if (!video.seekable.length || video.seekable.end(video.seekable.length - 1) <= 0) return;
@@ -412,24 +527,11 @@
         if (video.poster !== poster) video.poster = poster;
       }
       placeFilm();
-      // The local Django static server does not provide byte-range seeking.
-      // Load this short clip once; an object URL provides reliable local scrubbing.
-      // Other phones get a lighter encode of the landscape frames, so the timings are shared.
-      const clip = !config.upright && config.videoMobile && document.documentElement.clientWidth <= 800 ? config.videoMobile : config.video;
-      // The clip is kept in the browser cache; a new revision in the manifest replaces it.
+      // Media stays in the browser cache; a new revision in the manifest replaces it.
       const revision = typeof data.revision === 'string' && data.revision ? `?v=${encodeURIComponent(data.revision)}` : '';
-      return fetch(assetURL(clip) + revision, {signal: abort.signal, cache: 'force-cache'})
-        .then(response => {
-          if (!response.ok) throw new Error('Cinematic video unavailable');
-          return response.blob();
-        })
-        .then(blob => {
-          if (!active) return;
-          if (!blob.size) throw new Error('Cinematic video is empty');
-          mediaObjectURL = URL.createObjectURL(blob);
-          video.src = mediaObjectURL;
-          video.load();
-        });
+      const touch = window.matchMedia('(pointer: coarse), (hover: none)').matches || document.documentElement.clientWidth <= 800;
+      if (touch && config.frames) startSequence(config.frames, revision);
+      else loadClip(revision);
     })
     .catch(() => {
       if (active) showRegularCatalog(scene.contains(document.activeElement));
