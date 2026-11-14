@@ -1,8 +1,16 @@
 {
-  "revision": "20261114-2",
+  "revision": "20261114-3",
   "video": "master.mp4",
   "poster": "poster.jpg",
   "frames": {
+    "pattern": "wide-{index}.webp",
+    "count": 122,
+    "dimensions": [
+      1920,
+      1080
+    ]
+  },
+  "framesCompact": {
     "pattern": "landscape-{index}.webp",
     "count": 122,
     "dimensions": [

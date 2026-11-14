@@ -21,6 +21,9 @@
   let ready = false;
   let released = false;
   let config;
+  // The raw manifest is kept so the film can be chosen again when the window changes shape.
+  let manifest;
+  let revision = '';
   // Poster proportions for upright phones, known from the page before the manifest arrives.
   let posterSize;
   let viewportWidth = 0;
@@ -35,7 +38,7 @@
   let wantedTime = 0;
   let lastSeekTime = -1;
   let mediaObjectURL;
-  // Touch devices scrub numbered stills on a canvas; see startSequence().
+  // The film as numbered stills on a canvas; see startSequence().
   let sequence;
   let raf = 0;
   let resizeFrame = 0;
@@ -134,6 +137,10 @@
     } else if (oldTravel && oldProgress > 0) {
       window.scrollTo({top: sceneTop + oldProgress * travel, behavior: 'instant'});
     }
+    if (manifest && config && Boolean(config.upright) !== wantsUpright()) {
+      // The window turned from upright to wide or back: show the film made for that shape.
+      try { chooseFilm(); } catch (_) { /* keep the current film */ }
+    }
     placeFilm();
     schedule();
   }
@@ -174,8 +181,8 @@
     if (sequence) Object.assign(sequence.canvas.style, box);
   }
 
-  // Phones and tablets do not reliably paint frames of a paused video, so the same film
-  // is delivered there as numbered stills. Drawing one is instant and needs no media policy.
+  // Scrubbing a paused video depends on each browser's media rules (phones and Safari do not
+  // paint its frames), so the film is delivered as numbered stills. Drawing one is instant.
   function startSequence(spec, revision) {
     const canvas = document.createElement('canvas');
     canvas.className = 'cullinan-film';
@@ -410,14 +417,14 @@
       throw new Error('Incomplete cinematic manifest');
     }
     const remaining = data.duration - data.portalStart;
-    const stills = data.frames;
-    const frames = stills && typeof stills.pattern === 'string' && stills.pattern.includes('{index}') &&
-      Number.isInteger(stills.count) && stills.count >= 2 && stills.count <= 400 &&
-      Array.isArray(stills.dimensions) && stills.dimensions.length === 2 &&
-      stills.dimensions.every(side => Number.isFinite(side) && side > 0) ? stills : undefined;
+    const stills = spec => (spec && typeof spec.pattern === 'string' && spec.pattern.includes('{index}') &&
+      Number.isInteger(spec.count) && spec.count >= 2 && spec.count <= 400 &&
+      Array.isArray(spec.dimensions) && spec.dimensions.length === 2 &&
+      spec.dimensions.every(side => Number.isFinite(side) && side > 0) ? spec : undefined);
     return {
       ...data,
-      frames,
+      frames: stills(data.frames),
+      framesCompact: stills(data.framesCompact),
       portalFill,
       portalKeyframes: [...keyframes].sort((a, b) => a.time - b.time),
       expandStartProgress: clamp(Number.isFinite(data.expandStartProgress) ? data.expandStartProgress : DEFAULT_FILM_END, 0.6, 0.95),
@@ -429,6 +436,36 @@
   function uprightPhone() {
     const width = document.documentElement.clientWidth;
     return width <= 800 && window.innerHeight > width * 1.2;
+  }
+
+  function wantsUpright() {
+    return Boolean(manifest && manifest.portrait) && uprightPhone();
+  }
+
+  // Pick the film for the current window: upright or wide, and how detailed its stills are.
+  function chooseFilm() {
+    let next;
+    if (wantsUpright()) {
+      // Upright phones get their own film, with its own timings and handover.
+      try {
+        next = {...validateManifest(manifest.portrait), upright: true};
+      } catch (_) { /* keep the wide film */ }
+    }
+    config = next || validateManifest(manifest);
+    if (!config.upright) posterSize = undefined;
+    body.classList.toggle('cullinan-portrait', Boolean(config.upright));
+    if (config.poster) {
+      const poster = assetURL(config.poster);
+      if (video.poster !== poster) video.poster = poster;
+    }
+    stopSequence();
+    ready = false;
+    // The film is drawn from numbered stills in every browser; the video file is only a fallback.
+    const compact = window.matchMedia('(pointer: coarse), (hover: none)').matches || document.documentElement.clientWidth <= 800;
+    const spec = (compact && config.framesCompact) || config.frames;
+    if (spec) startSequence(spec, revision);
+    else loadClip(revision);
+    placeFilm();
   }
 
   function assetURL(path) {
@@ -452,6 +489,8 @@
         if (!active) return;
         if (!blob.size) throw new Error('Cinematic video is empty');
         mediaObjectURL = URL.createObjectURL(blob);
+        // Safari keeps to preload="none" even after load(); ask for the data outright.
+        video.preload = 'auto';
         video.src = mediaObjectURL;
         video.load();
       })
@@ -513,25 +552,10 @@
     })
     .then(data => {
       if (!active) return;
-      config = validateManifest(data);
-      if (data.portrait && uprightPhone()) {
-        // Upright phones get their own film, with its own timings and handover.
-        try {
-          config = {...validateManifest(data.portrait), upright: true};
-        } catch (_) { /* keep the landscape film */ }
-      }
-      if (!config.upright) posterSize = undefined;
-      body.classList.toggle('cullinan-portrait', Boolean(config.upright));
-      if (config.poster) {
-        const poster = assetURL(config.poster);
-        if (video.poster !== poster) video.poster = poster;
-      }
-      placeFilm();
+      manifest = data;
       // Media stays in the browser cache; a new revision in the manifest replaces it.
-      const revision = typeof data.revision === 'string' && data.revision ? `?v=${encodeURIComponent(data.revision)}` : '';
-      const touch = window.matchMedia('(pointer: coarse), (hover: none)').matches || document.documentElement.clientWidth <= 800;
-      if (touch && config.frames) startSequence(config.frames, revision);
-      else loadClip(revision);
+      revision = typeof data.revision === 'string' && data.revision ? `?v=${encodeURIComponent(data.revision)}` : '';
+      chooseFilm();
     })
     .catch(() => {
       if (active) showRegularCatalog(scene.contains(document.activeElement));
