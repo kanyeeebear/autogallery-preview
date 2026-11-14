@@ -1,22 +1,26 @@
 {
-  "revision": "20261114-4",
+  "revision": "20261114-5",
   "video": "master.mp4",
   "poster": "poster.jpg",
   "frames": {
     "pattern": "wide-{index}.webp",
-    "count": 122,
+    "count": 243,
     "dimensions": [
       1920,
       1080
-    ]
+    ],
+    "fps": 30,
+    "quality": 95
   },
   "framesCompact": {
     "pattern": "landscape-{index}.webp",
-    "count": 122,
+    "count": 243,
     "dimensions": [
       1280,
       720
-    ]
+    ],
+    "fps": 30,
+    "quality": 92
   },
   "duration": 8.1,
   "portalStart": 7.55,
@@ -78,11 +82,13 @@
     "expandStartProgress": 0.95,
     "frames": {
       "pattern": "portrait-{index}.webp",
-      "count": 129,
+      "count": 193,
       "dimensions": [
         864,
         1536
-      ]
+      ],
+      "fps": 24,
+      "quality": 92
     }
   },
   "provenance": {

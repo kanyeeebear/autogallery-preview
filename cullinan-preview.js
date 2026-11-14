@@ -13,6 +13,8 @@
   const skip = scene.querySelector('.cullinan-skip');
   const cue = scene.querySelector('.cullinan-scroll-cue');
   const intro = scene.querySelector('.cullinan-intro');
+  const actions = scene.querySelector('.cullinan-actions');
+  const toolbar = scene.querySelector('.cullinan-toolbar');
   const title = catalog.querySelector('#catalog-title');
   const baseSkip = document.querySelector('.skip-link');
   const moved = [];
@@ -21,6 +23,8 @@
   let ready = false;
   let released = false;
   let config;
+  let filmKey;
+  let clipGeneration = 0;
   // The raw manifest is kept so the film can be chosen again when the window changes shape.
   let manifest;
   let revision = '';
@@ -137,9 +141,8 @@
     } else if (oldTravel && oldProgress > 0) {
       window.scrollTo({top: sceneTop + oldProgress * travel, behavior: 'instant'});
     }
-    if (manifest && config && Boolean(config.upright) !== wantsUpright()) {
-      // The window turned from upright to wide or back: show the film made for that shape.
-      try { chooseFilm(); } catch (_) { /* keep the current film */ }
+    if (manifest && config && filmKey !== wantedFilmKey()) {
+      try { chooseFilm(); } catch (_) { showRegularCatalog(); return; }
     }
     placeFilm();
     schedule();
@@ -181,55 +184,84 @@
     if (sequence) Object.assign(sequence.canvas.style, box);
   }
 
-  // Scrubbing a paused video depends on each browser's media rules (phones and Safari do not
-  // paint its frames), so the film is delivered as numbered stills. Drawing one is instant.
+  // A bounded neighbourhood of decoded frames, with the desired frame requested first.
+  // The browser HTTP cache can retain compressed files without keeping the whole film decoded.
   function startSequence(spec, revision) {
     const canvas = document.createElement('canvas');
     canvas.className = 'cullinan-film';
     canvas.width = spec.dimensions[0];
     canvas.height = spec.dimensions[1];
     canvas.setAttribute('aria-hidden', 'true');
-    // Coarse first: the whole film can be scrubbed early, then it fills in.
-    const order = [];
-    for (const step of [16, 8, 4, 2, 1]) {
-      for (let index = 0; index < spec.count; index += step) if (!order.includes(index)) order.push(index);
+    const compact = spec.dimensions[0] < 1920;
+    sequence = {canvas, context: canvas.getContext('2d'), size: spec.dimensions, count: spec.count,
+      fps: spec.fps || (spec.count - 1) / config.duration,
+      images: new Map(), failures: new Set(), pending: 0, shown: -1, wanted: 0, direction: 1,
+      capacity: compact ? 10 : 20, concurrency: compact ? 3 : 4,
+      address: index => assetURL(spec.pattern.replace('{index}', String(index).padStart(3, '0'))) + revision};
+    if (!sequence.context) return showRegularCatalog();
+    drawSequence(config.duration * filmProgress());
+  }
+
+  function frameOrder(film) {
+    const order = [film.wanted];
+    // Two frames forward for each frame behind; reverse the priorities when scrolling back.
+    for (let distance = 1; order.length < film.capacity && distance < film.count; distance += 1) {
+      for (const offset of [distance * 2 - 1, distance * 2, -distance]) {
+        const index = film.wanted + offset * film.direction;
+        if (index >= 0 && index < film.count && !order.includes(index)) order.push(index);
+        if (order.length === film.capacity) break;
+      }
     }
-    sequence = {canvas, context: canvas.getContext('2d'), size: spec.dimensions, count: spec.count, order,
-      images: new Array(spec.count), loaded: new Array(spec.count).fill(false), pending: 0, failed: 0, shown: -1,
-      revision, address: index => assetURL(spec.pattern.replace('{index}', String(index).padStart(3, '0'))) + revision};
-    loadFrames();
+    return order;
+  }
+
+  function discardFrame(film, index, entry) {
+    entry.image.onload = null;
+    entry.image.onerror = null;
+    if (!entry.loaded) film.pending -= 1;
+    entry.image.src = '';
+    film.images.delete(index);
   }
 
   function loadFrames() {
-    while (sequence && sequence.pending < 6 && sequence.order.length) {
-      const film = sequence;
-      const index = film.order.shift();
+    const film = sequence;
+    if (!film || released) return;
+    const order = frameOrder(film);
+    const keep = new Set(order);
+    for (const [index, entry] of film.images) {
+      if (!keep.has(index)) discardFrame(film, index, entry);
+    }
+    for (const index of order) {
+      if (film.pending >= film.concurrency) break;
+      if (film.images.has(index) || film.failures.has(index)) continue;
       const image = new Image();
-      film.images[index] = image;
+      const entry = {image, loaded: false};
+      film.images.set(index, entry);
       film.pending += 1;
-      image.onload = () => {
-        if (sequence !== film) return;
+      image.decoding = 'async';
+      image.onload = async () => {
+        try { if (image.decode) await image.decode(); }
+        catch (_) { if (image.onerror) image.onerror(); return; }
+        if (sequence !== film || film.images.get(index) !== entry) return;
         film.pending -= 1;
-        film.loaded[index] = true;
-        if (index === 0) {
-          // The first still replaces the poster; from here the scene can be scrubbed.
+        entry.loaded = true;
+        if (!ready && index === film.wanted) {
           video.after(film.canvas);
-          clearTimeout(loadingTimer);
           ready = true;
-          measure();
+          clearTimeout(loadingTimer);
+          placeFilm();
         }
         loadFrames();
         schedule();
       };
       image.onerror = () => {
-        if (sequence !== film) return;
+        if (sequence !== film || film.images.get(index) !== entry) return;
         film.pending -= 1;
-        film.failed += 1;
-        // Without its opening still, or with many gaps, fall back to the video file.
-        if (index === 0 || film.failed > 6) {
-          stopSequence();
-          loadClip(film.revision);
-        } else loadFrames();
+        film.images.delete(index);
+        film.failures.add(index);
+        // A broken scene must never lock access to the actual catalogue.
+        if (index === film.wanted || film.failures.size > 6) showRegularCatalog();
+        else loadFrames();
       };
       image.src = film.address(index);
     }
@@ -237,29 +269,33 @@
 
   function drawSequence(time) {
     const film = sequence;
-    const wanted = Math.round(clamp(time / config.duration) * (film.count - 1));
-    // Until every still has arrived, show the closest one that has.
-    let best = -1;
-    for (let offset = 0; offset < film.count && best < 0; offset += 1) {
-      if (film.loaded[wanted - offset]) best = wanted - offset;
-      else if (film.loaded[wanted + offset]) best = wanted + offset;
-    }
-    if (best < 0 || best === film.shown) return;
-    film.context.drawImage(film.images[best], 0, 0, film.canvas.width, film.canvas.height);
-    film.shown = best;
+    const wanted = Math.min(film.count - 1, Math.floor(Math.max(0, time) * film.fps));
+    if (wanted !== film.wanted) film.direction = wanted > film.wanted ? 1 : -1;
+    film.wanted = wanted;
+    loadFrames();
+    if (sequence !== film) return;
+    // Keep the last painted image while the exact new frame arrives, rather than
+    // jumping to a distant keyframe. The portal follows the painted image too.
+    const entry = film.images.get(wanted);
+    if (!entry || !entry.loaded || wanted === film.shown) return;
+    film.context.drawImage(entry.image, 0, 0, film.canvas.width, film.canvas.height);
+    film.shown = wanted;
+    film.canvas.dataset.frame = String(wanted);
   }
 
   function stopSequence() {
     if (!sequence) return;
-    for (const image of sequence.images) {
-      if (image) {
-        image.onload = null;
-        image.onerror = null;
-        image.src = '';
-      }
-    }
+    for (const [index, entry] of sequence.images) discardFrame(sequence, index, entry);
     sequence.canvas.remove();
     sequence = undefined;
+  }
+
+  function hideControls(node, hidden, fallback) {
+    if (!node || node.inert === hidden) return;
+    if (hidden && node.contains(document.activeElement)) fallback.focus({preventScroll: true});
+    node.inert = hidden;
+    if (hidden) node.setAttribute('aria-hidden', 'true');
+    else node.removeAttribute('aria-hidden');
   }
 
   function screenQuad(time) {
@@ -335,6 +371,9 @@
     const immersed = config.upright ? clamp((played - 0.12) / 0.2) : 0;
     scene.style.setProperty('--cullinan-actions', String(1 - immersed));
     body.classList.toggle('cullinan-immersed', immersed >= 1);
+    const controlsHidden = expansion >= 0.3 || covering >= 0.5;
+    hideControls(toolbar, controlsHidden, baseSkip);
+    hideControls(actions, controlsHidden || immersed >= 1, controlsHidden ? baseSkip : skip);
     if (intro) {
       intro.style.opacity = String(1 - clamp(played / 0.28));
       intro.style.visibility = played >= 0.28 ? 'hidden' : 'visible';
@@ -377,6 +416,8 @@
     target = clamp((window.scrollY - sceneTop) / travel);
     setReleased(target >= 1);
     if (released) {
+      // Release decoded frames after entry; scrolling back requests its neighbourhood anew.
+      if (sequence) for (const [index, entry] of sequence.images) discardFrame(sequence, index, entry);
       progress = 1;
       lastFrame = 0;
       return;
@@ -387,10 +428,10 @@
     const gap = target - progress;
     progress = Math.abs(gap) < 0.0004 ? target : progress + gap * (1 - Math.exp(-elapsed / SMOOTHING));
     placeFilm();
-    if (ready && sequence) {
+    if (sequence) {
       wantedTime = config.duration * filmProgress();
       drawSequence(wantedTime);
-      renderPortal(wantedTime);
+      if (sequence && sequence.shown >= 0) renderPortal(sequence.shown / sequence.fps);
     } else if (ready) {
       wantedTime = Math.min(config.duration, video.duration - 0.04) * filmProgress();
       seek();
@@ -419,6 +460,7 @@
     const remaining = data.duration - data.portalStart;
     const stills = spec => (spec && typeof spec.pattern === 'string' && spec.pattern.includes('{index}') &&
       Number.isInteger(spec.count) && spec.count >= 2 && spec.count <= 400 &&
+      (spec.fps === undefined || (Number.isFinite(spec.fps) && spec.fps > 0 && spec.fps <= 60)) &&
       Array.isArray(spec.dimensions) && spec.dimensions.length === 2 &&
       spec.dimensions.every(side => Number.isFinite(side) && side > 0) ? spec : undefined);
     return {
@@ -442,8 +484,20 @@
     return Boolean(manifest && manifest.portrait) && uprightPhone();
   }
 
+  function wantedFilmKey() {
+    // Touch laptops and wide tablets deserve full resolution too.
+    return wantsUpright() ? 'portrait' : (document.documentElement.clientWidth <= 800 ? 'compact' : 'wide');
+  }
+
+  function armLoadingTimeout() {
+    clearTimeout(loadingTimer);
+    loadingTimer = setTimeout(() => showRegularCatalog(scene.contains(document.activeElement)), 10000);
+  }
+
   // Pick the film for the current window: upright or wide, and how detailed its stills are.
   function chooseFilm() {
+    filmKey = wantedFilmKey();
+    clipGeneration += 1;
     let next;
     if (wantsUpright()) {
       // Upright phones get their own film, with its own timings and handover.
@@ -460,8 +514,14 @@
     }
     stopSequence();
     ready = false;
+    lastSeekTime = -1;
+    video.removeAttribute('src');
+    video.load();
+    if (mediaObjectURL) URL.revokeObjectURL(mediaObjectURL);
+    mediaObjectURL = undefined;
+    armLoadingTimeout();
     // The film is drawn from numbered stills in every browser; the video file is only a fallback.
-    const compact = window.matchMedia('(pointer: coarse), (hover: none)').matches || document.documentElement.clientWidth <= 800;
+    const compact = filmKey === 'compact';
     const spec = (compact && config.framesCompact) || config.frames;
     if (spec) startSequence(spec, revision);
     else loadClip(revision);
@@ -480,13 +540,14 @@
   // The local Django static server does not provide byte-range seeking.
   // Load this short clip once; an object URL provides reliable local scrubbing.
   function loadClip(revision) {
+    const generation = clipGeneration;
     fetch(assetURL(config.video) + revision, {signal: abort.signal, cache: 'force-cache'})
       .then(response => {
         if (!response.ok) throw new Error('Cinematic video unavailable');
         return response.blob();
       })
       .then(blob => {
-        if (!active) return;
+        if (!active || generation !== clipGeneration) return;
         if (!blob.size) throw new Error('Cinematic video is empty');
         mediaObjectURL = URL.createObjectURL(blob);
         // Safari keeps to preload="none" even after load(); ask for the data outright.
@@ -495,7 +556,7 @@
         video.load();
       })
       .catch(() => {
-        if (active) showRegularCatalog(scene.contains(document.activeElement));
+        if (active && generation === clipGeneration) showRegularCatalog(scene.contains(document.activeElement));
       });
   }
 
@@ -542,7 +603,7 @@
   };
   video.addEventListener('loadeddata', readyWhenSeekable, {signal: abort.signal});
   video.addEventListener('canplay', readyWhenSeekable, {signal: abort.signal});
-  loadingTimer = setTimeout(() => showRegularCatalog(scene.contains(document.activeElement)), 10000);
+  armLoadingTimeout();
   measure();
 
   fetch(scene.dataset.manifest, {signal: abort.signal, cache: 'no-cache'})

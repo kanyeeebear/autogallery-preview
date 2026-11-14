@@ -15,7 +15,7 @@ html:has(.cullinan-enhanced){scroll-behavior:auto}
 .cullinan-actions{position:absolute;z-index:2;bottom:68px;left:40px;display:flex;gap:12px}
 .cullinan-actions .button{min-height:48px;padding:12px 24px}
 /* The film passes behind these controls, so the secondary one needs its own surface. */
-.cullinan-actions .outline{background:var(--paper)}.cullinan-actions .outline:hover{background:#eaf0ec}
+.cullinan-actions .outline{background:var(--paper)}.cullinan-actions .outline:hover{background:var(--wash)}
 .cullinan-caption{position:absolute;bottom:20px;left:40px;right:40px;display:flex;align-items:center;justify-content:space-between;gap:20px;color:var(--muted)}
 .cullinan-scroll-cue{display:none;align-items:center;gap:10px;font-size:14px;color:var(--ink)}
 .cullinan-scroll-cue svg{animation:cullinan-nudge 1.8s ease-in-out infinite}
