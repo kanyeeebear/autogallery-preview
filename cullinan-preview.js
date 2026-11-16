@@ -16,7 +16,7 @@
   const skip = scene.querySelector('.cullinan-skip');
   const title = catalog.querySelector('#catalog-title');
   const baseSkip = document.querySelector('.skip-link');
-  if (!video || !status || !cue || !video.requestVideoFrameCallback) return;
+  if (!video || !status || !cue) return;
   const abort = new AbortController();
   const moved = [];
   let active = true, ready = false, released = false, inFlight = false, primed = false;
@@ -30,6 +30,8 @@
   const ease = n => n*n*(3-2*n);
   const FILM_END = 0.82;
 
+  function armLoadTimeout(){clearTimeout(loadTimer);if(!document.hidden)loadTimer=setTimeout(()=>restore(scene.contains(document.activeElement)),30000);}
+  function armSeekTimeout(){clearTimeout(seekTimer);if(!document.hidden&&!released)seekTimer=setTimeout(()=>restore(scene.contains(document.activeElement)),4000);}
   function focusCatalog() { title?.setAttribute('tabindex','-1'); title?.focus({preventScroll:true}); }
   function restore(focus = false) {
     if (!active) return;
@@ -82,7 +84,7 @@
     video.poster=asset(config.poster);
     scene.dataset.playback='loading';status.hidden=false;status.textContent='Готуємо анімацію…';
     placeFilm();
-    loadTimer=setTimeout(()=>restore(scene.contains(document.activeElement)),30000);
+    armLoadTimeout();
     try {
       const r=await fetch(asset(config.video)+revision,{signal:download.signal,cache:'force-cache'});
       if(!r.ok)throw Error('Film unavailable');const blob=await r.blob();
@@ -94,21 +96,27 @@
     } catch(error) {if(active&&token===generation&&error.name!=='AbortError')restore(scene.contains(document.activeElement));}
   }
   function watchFrame(token) {
-    frameCallback=video.requestVideoFrameCallback((now, metadata)=>{
+    if(!video.requestVideoFrameCallback)return;
+    frameCallback=video.requestVideoFrameCallback((now,metadata)=>{
       if(!active||token!==generation)return;
       frameCallback=0;
-      if(video.readyState>=2 && video.videoWidth && video.videoHeight) {
-        // Keep the native video surface visible: an opaque canvas above it can
-        // suppress compositor callbacks in Chrome. This callback confirms the displayed frame.
-        paintedTime=metadata.mediaTime;
-        scene.dataset.frame=String(Math.round(paintedTime*config.fps));
-        scene.dataset.filmTime=paintedTime.toFixed(4);
-        scene.dataset.seekMs=String(Math.round(inFlight?performance.now()-seekStarted:0));
-        inFlight=false;clearTimeout(seekTimer);
-        if(!ready){ready=true;clearTimeout(loadTimer);status.hidden=true;scene.dataset.playback='scrub';placeFilm();}
-        renderPortal();
-      }
-      watchFrame(token);schedule();
+      scene.dataset.presentedTime=metadata.mediaTime.toFixed(4);
+      watchFrame(token);
+    });
+  }
+  function commitSeek() {
+    const token=generation;
+    // Native video owns its displayed surface. Allow one render turn after seeked;
+    // requestVideoFrameCallback is diagnostic only (paused/occluded videos can suppress it).
+    requestAnimationFrame(()=>{
+      if(!active||token!==generation||video.seeking||video.readyState<2)return;
+      paintedTime=video.currentTime;
+      scene.dataset.frame=String(Math.round(paintedTime*config.fps));
+      scene.dataset.filmTime=paintedTime.toFixed(4);
+      scene.dataset.seekMs=String(Math.round(inFlight?performance.now()-seekStarted:0));
+      inFlight=false;clearTimeout(seekTimer);
+      if(!ready){ready=true;clearTimeout(loadTimer);status.hidden=true;scene.dataset.playback='scrub';placeFilm();}
+      renderPortal();schedule();
     });
   }
   function updateTarget() {
@@ -119,18 +127,18 @@
     scene.dataset.targetTime=wantedTime.toFixed(4);
   }
   function seek() {
-    if(!active||!ready||inFlight||video.seeking||document.hidden)return;
+    if(!active||!ready||released||inFlight||video.seeking||document.hidden)return;
     if(Math.abs(wantedTime-paintedTime)<0.5/config.fps)return;
     // One seek at a time. Never cancel a decoder operation on the next scroll event.
     // Once it paints, the newest scroll position wins; no stale queue to play through.
     inFlight=true;seekStarted=performance.now();
-    seekTimer=setTimeout(()=>restore(scene.contains(document.activeElement)),4000);
+    armSeekTimeout();
     try{video.currentTime=wantedTime;}catch(_){restore();}
   }
   function setReleased(value) {
     if(released===value)return;
     released=value;body.classList.toggle('cullinan-released',value);
-    if(value)body.classList.remove('cullinan-instrument','cullinan-immersed');
+    if(value){body.classList.remove('cullinan-instrument','cullinan-immersed');clearTimeout(seekTimer);inFlight=false;}
     else hide(toolbar,false,baseSkip);
     if(!value && catalog.contains(document.activeElement))skip.focus({preventScroll:true});
     catalog.inert=!value;
@@ -264,8 +272,11 @@
   window.addEventListener('resize',()=>{cancelAnimationFrame(resizeRAF);resizeRAF=requestAnimationFrame(measure);},{passive:true,signal:abort.signal});
   window.addEventListener('keydown',e=>{if(e.key==='Escape')restore(true);},{signal:abort.signal});
   motion.addEventListener('change',e=>{if(e.matches)restore(scene.contains(document.activeElement));},{signal:abort.signal});
-  document.addEventListener('visibilitychange',()=>{if(!document.hidden)schedule();},{signal:abort.signal});
-  video.addEventListener('seeked',schedule,{signal:abort.signal});
+  document.addEventListener('visibilitychange',()=>{
+    if(document.hidden){clearTimeout(loadTimer);clearTimeout(seekTimer);}
+    else{if(!ready)armLoadTimeout();if(inFlight)armSeekTimeout();schedule();}
+  },{signal:abort.signal});
+  video.addEventListener('seeked',commitSeek,{signal:abort.signal});
   video.addEventListener('canplay',()=>{
     if(!active || !objectURL || !config)return;
     placeFilm();
@@ -275,7 +286,7 @@
     schedule();
   },{signal:abort.signal});
   video.addEventListener('error',()=>restore(scene.contains(document.activeElement)),{signal:abort.signal});
-  measure();loadTimer=setTimeout(()=>restore(),30000);
+  measure();armLoadTimeout();
   fetch(scene.dataset.manifest,{signal:abort.signal,cache:'no-cache'})
     .then(r=>{if(!r.ok)throw Error('Manifest unavailable');return r.json();})
     .then(data=>{if(active){manifest=data;revision='?v=scroll-20261116-1-'+encodeURIComponent(data.revision||'original');chooseFilm();}})
