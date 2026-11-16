@@ -17,10 +17,6 @@
   const title = catalog.querySelector('#catalog-title');
   const baseSkip = document.querySelector('.skip-link');
   if (!video || !status || !cue || !video.requestVideoFrameCallback) return;
-  const canvas = document.createElement('canvas');
-  canvas.className = 'cullinan-film'; canvas.setAttribute('aria-hidden','true');
-  const context = canvas.getContext('2d', {alpha: false});
-  if (!context) return;
   const abort = new AbortController();
   const moved = [];
   let active = true, ready = false, released = false, inFlight = false, primed = false;
@@ -41,7 +37,7 @@
     clearTimeout(loadTimer); clearTimeout(seekTimer);
     cancelAnimationFrame(raf); cancelAnimationFrame(resizeRAF);
     if (frameCallback) video.cancelVideoFrameCallback(frameCallback);
-    video.pause(); video.removeAttribute('src'); video.load(); canvas.remove();
+    video.pause(); video.removeAttribute('src'); video.load();
     if (objectURL) URL.revokeObjectURL(objectURL);
     catalog.inert=false; catalog.removeAttribute('aria-hidden'); catalog.removeAttribute('style');
     anchor.style.removeProperty('min-height');
@@ -79,7 +75,7 @@
     clearTimeout(loadTimer);clearTimeout(seekTimer);
     if(frameCallback)video.cancelVideoFrameCallback(frameCallback);
     frameCallback=0;ready=false;inFlight=false;primed=false;paintedTime=-1;
-    canvas.remove(); video.pause();video.removeAttribute('src');video.load();
+    video.pause();video.removeAttribute('src');video.load();
     if(objectURL)URL.revokeObjectURL(objectURL);objectURL=undefined;
     config={...validate(upright()&&manifest.portrait?manifest.portrait:manifest),upright:Boolean(upright()&&manifest.portrait)};
     body.classList.toggle('cullinan-portrait',config.upright);
@@ -102,15 +98,14 @@
       if(!active||token!==generation)return;
       frameCallback=0;
       if(video.readyState>=2 && video.videoWidth && video.videoHeight) {
-        if(canvas.width!==video.videoWidth || canvas.height!==video.videoHeight){canvas.width=video.videoWidth;canvas.height=video.videoHeight;}
-        // seeked alone is not proof that WebKit has presented the new image.
-        context.drawImage(video,0,0,canvas.width,canvas.height);
+        // Keep the native video surface visible: an opaque canvas above it can
+        // suppress compositor callbacks in Chrome. This callback confirms the displayed frame.
         paintedTime=metadata.mediaTime;
-        canvas.dataset.frame=String(Math.round(paintedTime*config.fps));
+        scene.dataset.frame=String(Math.round(paintedTime*config.fps));
         scene.dataset.filmTime=paintedTime.toFixed(4);
         scene.dataset.seekMs=String(Math.round(inFlight?performance.now()-seekStarted:0));
         inFlight=false;clearTimeout(seekTimer);
-        if(!ready){ready=true;video.after(canvas);clearTimeout(loadTimer);status.hidden=true;scene.dataset.playback='scrub';placeFilm();}
+        if(!ready){ready=true;clearTimeout(loadTimer);status.hidden=true;scene.dataset.playback='scrub';placeFilm();}
         renderPortal();
       }
       watchFrame(token);schedule();
@@ -168,7 +163,7 @@
   }
   function placeFilm() {
     const f=filmRect(),box={width:`${f.width}px`,height:`${f.height}px`,left:`${f.x}px`,top:`${f.y}px`};
-    Object.assign(video.style,box);Object.assign(canvas.style,box);
+    Object.assign(video.style,box);
   }
   function screenQuad(time) {
     // A film that ends inside the display hands over the whole viewport.
