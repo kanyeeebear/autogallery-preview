@@ -1,6 +1,5 @@
 (() => {
   'use strict';
-
   const scene = document.getElementById('cullinan-scene');
   const catalog = document.getElementById('cullinan-catalog');
   const anchor = document.getElementById('cullinan-catalog-anchor');
@@ -10,295 +9,133 @@
 
   const body = document.body;
   const video = scene.querySelector('video');
-  const skip = scene.querySelector('.cullinan-skip');
-  const cue = scene.querySelector('.cullinan-scroll-cue');
+  const play = scene.querySelector('.cullinan-play');
+  const status = scene.querySelector('.cullinan-play-status');
   const intro = scene.querySelector('.cullinan-intro');
   const actions = scene.querySelector('.cullinan-actions');
-  const toolbar = scene.querySelector('.cullinan-toolbar');
+  const skip = scene.querySelector('.cullinan-skip');
   const title = catalog.querySelector('#catalog-title');
   const baseSkip = document.querySelector('.skip-link');
-  const moved = [];
+  if (!video || !play || !status) return;
   const abort = new AbortController();
-  let active = true;
-  let ready = false;
-  let released = false;
-  let config;
-  let filmKey;
-  let clipGeneration = 0;
-  // The raw manifest is kept so the film can be chosen again when the window changes shape.
-  let manifest;
-  let revision = '';
-  // Poster proportions for upright phones, known from the page before the manifest arrives.
-  let posterSize;
-  let viewportWidth = 0;
-  let viewportHeight = 0;
-  let travel = 0;
-  let sceneTop = 0;
-  // `target` follows the scroll position; `progress` eases towards it so that
-  // wheel ticks and touch flicks scrub the film without visible steps.
-  let target = 0;
-  let progress = 0;
-  let lastFrame = 0;
-  let wantedTime = 0;
-  let lastSeekTime = -1;
-  let mediaObjectURL;
-  // The film as numbered stills on a canvas; see startSequence().
-  let sequence;
-  let raf = 0;
-  let resizeFrame = 0;
-  let loadingTimer;
+  const moved = [];
+  let active = true, ready = false, started = false, wantsPlay = false, playing = false;
+  let manifest, config, objectURL, download, generation = 0;
+  let raf = 0, resizeRAF = 0, loadTimer, stallTimer, finishAt = null;
+  let viewportWidth = 0, viewportHeight = 0, travel = 0, sceneTop = 0;
+  let resumeOnVisible = false;
+  const clamp = (n, lo = 0, hi = 1) => Math.min(hi, Math.max(lo, n));
+  const mix = (a, b, n) => a + (b - a) * n;
+  const ease = n => n * n * (3 - 2 * n);
+  const revision = '?v=continuous-20261116-1';
 
-  const clamp = (value, low = 0, high = 1) => Math.min(high, Math.max(low, value));
-  const mix = (a, b, amount) => a + (b - a) * amount;
-  const easeOut = value => value >= 1 ? 1 : 1 - Math.pow(2, -10 * value);
-  const easeInOut = value => value < 0.5 ? 4 * value * value * value : 1 - Math.pow(-2 * value + 2, 3) / 2;
-  const SMOOTHING = 110; // milliseconds for the eased progress to close most of a gap
-  const DEFAULT_FILM_END = 0.76;
-
+  function state(name, message = '') {
+    scene.dataset.playback = name;
+    status.textContent = message;
+    play.textContent = playing ? 'Пауза' : (started ? 'Продовжити' : 'Відкрити двері');
+    play.setAttribute('aria-label', playing ? 'Призупинити відео' : (started ? 'Продовжити відео' : 'Відкрити двері: відтворити відео'));
+  }
   function focusCatalog() {
-    if (title) {
-      title.setAttribute('tabindex', '-1');
-      title.focus({preventScroll: true});
-    }
+    title?.setAttribute('tabindex', '-1');
+    title?.focus({preventScroll: true});
   }
-
-  // Move the original nodes once. There is only one catalogue and one set of forms.
-  function moveIntoCatalog(node, prepend = false) {
-    if (!node) return;
-    const marker = document.createComment('Cullinan preview original position');
-    node.before(marker);
-    moved.push({node, marker});
-    if (prepend) catalog.prepend(node);
-    else catalog.append(node);
-  }
-
-  function showRegularCatalog(focus = false) {
+  function restore(focus = false) {
     if (!active) return;
     active = false;
+    generation += 1;
     abort.abort();
-    clearTimeout(loadingTimer);
-    cancelAnimationFrame(raf);
-    cancelAnimationFrame(resizeFrame);
-    stopSequence();
-    video.pause();
-    video.removeAttribute('src');
-    video.load();
-    if (mediaObjectURL) {
-      URL.revokeObjectURL(mediaObjectURL);
-      mediaObjectURL = undefined;
-    }
+    download?.abort();
+    clearTimeout(loadTimer); clearTimeout(stallTimer);
+    cancelAnimationFrame(raf); cancelAnimationFrame(resizeRAF);
+    video.pause(); video.removeAttribute('src'); video.load();
+    if (objectURL) URL.revokeObjectURL(objectURL);
     catalog.inert = false;
-    catalog.removeAttribute('aria-hidden');
-    catalog.removeAttribute('style');
+    catalog.removeAttribute('aria-hidden'); catalog.removeAttribute('style');
     anchor.style.removeProperty('min-height');
-    body.classList.remove('cullinan-enhanced', 'cullinan-released', 'cullinan-instrument', 'cullinan-entering', 'cullinan-portrait', 'cullinan-immersed');
-    scene.style.removeProperty('--cullinan-chrome');
-    scene.style.removeProperty('--cullinan-actions');
-    body.style.removeProperty('--cullinan-height');
-    body.style.removeProperty('--cullinan-travel');
+    body.classList.remove('cullinan-enhanced', 'cullinan-instrument', 'cullinan-portrait', 'cullinan-immersed', 'cullinan-released');
+    body.style.removeProperty('--cullinan-height'); body.style.removeProperty('--cullinan-travel');
     for (const {node, marker} of moved) marker.replaceWith(node);
     scene.hidden = true;
     window.scrollTo({top: 0, behavior: 'instant'});
     if (focus) focusCatalog();
   }
-
-  function onSkip(event) {
-    event.preventDefault();
-    showRegularCatalog(true);
+  function move(node, prepend = false) {
+    if (!node) return;
+    const marker = document.createComment('cinematic original position');
+    node.before(marker); moved.push({node, marker});
+    if (prepend) catalog.prepend(node); else catalog.append(node);
   }
-
-  function setReleased(value) {
-    if (released === value) return;
-    released = value;
-    body.classList.toggle('cullinan-released', value);
-    if (value) body.classList.remove('cullinan-instrument', 'cullinan-entering', 'cullinan-immersed');
-    if (!value && catalog.contains(document.activeElement)) skip.focus({preventScroll: true});
-    catalog.inert = !value;
-    if (value) {
-      catalog.removeAttribute('aria-hidden');
-      catalog.style.removeProperty('height');
-    } else catalog.setAttribute('aria-hidden', 'true');
-    if (value && scene.contains(document.activeElement)) focusCatalog();
+  function upright() {
+    return document.documentElement.clientWidth <= 800 && window.innerHeight > document.documentElement.clientWidth * 1.2;
   }
-
+  function asset(path) {
+    const base = new URL(scene.dataset.mediaBase || scene.dataset.manifest, window.location.href);
+    const url = new URL(path, base);
+    if (url.origin !== base.origin || !['http:', 'https:'].includes(url.protocol)) throw Error('Invalid film origin');
+    return url.href;
+  }
+  function validate(data) {
+    if (!data || typeof data.video !== 'string' || !Number.isFinite(data.duration) || data.duration <= 0 ||
+        !Number.isFinite(data.portalStart) || data.portalStart < 0 || data.portalStart >= data.duration) throw Error('Invalid film');
+    const fill = data.portal === 'viewport';
+    const frames = data.portalKeyframes;
+    if (!fill && (!Array.isArray(frames) || !frames.length || frames.some(f => !Number.isFinite(f.time) ||
+      !Array.isArray(f.quad) || f.quad.length !== 4 || f.quad.some(p => !Array.isArray(p) || p.length !== 2 || !p.every(Number.isFinite))))) throw Error('Invalid portal');
+    return {...data, portalFill: fill, portalKeyframes: fill ? [] : [...frames].sort((a,b) => a.time-b.time)};
+  }
+  async function chooseFilm() {
+    const token = ++generation;
+    download?.abort(); download = new AbortController();
+    ready = false;
+    config = {...validate(upright() && manifest.portrait ? manifest.portrait : manifest), upright: Boolean(upright() && manifest.portrait)};
+    body.classList.toggle('cullinan-portrait', config.upright);
+    video.poster = asset(config.poster);
+    state('loading', 'Готуємо відео…');
+    clearTimeout(loadTimer);
+    loadTimer = setTimeout(() => restore(scene.contains(document.activeElement)), 20000);
+    // Download one compact movie completely before playing. No range seeking, no image queue,
+    // no reassignment of currentTime while scrolling. The native decoder owns frame pacing.
+    try {
+      const response = await fetch(asset(config.video) + revision, {signal: download.signal, cache: 'force-cache'});
+      if (!response.ok) throw Error('Film unavailable');
+      const blob = await response.blob();
+      if (!active || token !== generation) return;
+      if (!blob.size) throw Error('Empty film');
+      video.pause(); video.removeAttribute('src'); video.load();
+      if (objectURL) URL.revokeObjectURL(objectURL);
+      objectURL = URL.createObjectURL(blob);
+      video.muted = true; video.defaultMuted = true; video.playsInline = true; video.preload = 'auto';
+      video.src = objectURL; video.load();
+    } catch (error) {
+      if (active && token === generation && error.name !== 'AbortError') restore(scene.contains(document.activeElement));
+    }
+    placeFilm();
+  }
+  function filmProgress() { return config ? clamp(video.currentTime / config.duration) : 0; }
+  function filmRect() {
+    const size = config?.dimensions || (config?.upright ? [1080,1920] : [1920,1080]);
+    const w = video.videoWidth || size[0], h = video.videoHeight || size[1];
+    const scale = Math.min(viewportWidth / w, viewportHeight / h);
+    // Stable framing: the camera move is already authored in the film.
+    return {width: w*scale, height: h*scale, x: (viewportWidth-w*scale)/2, y: (viewportHeight-h*scale)/2};
+  }
+  function placeFilm() {
+    const f = filmRect();
+    Object.assign(video.style, {width: `${f.width}px`, height: `${f.height}px`, left: `${f.x}px`, top: `${f.y}px`});
+  }
   function measure() {
     if (!active) return;
-    if (viewportWidth <= 800 && viewportWidth === document.documentElement.clientWidth &&
-        Math.abs(window.innerHeight - viewportHeight) < 140 &&
-        (!manifest || filmKey === wantedFilmKey())) { schedule(); return; }
-    const oldTravel = travel;
-    const oldProgress = oldTravel ? clamp((window.scrollY - sceneTop) / oldTravel) : 0;
-    const catalogOffset = Math.max(0, window.scrollY - sceneTop - oldTravel);
     viewportWidth = document.documentElement.clientWidth;
     viewportHeight = window.innerHeight;
-    travel = Math.round(viewportHeight * (viewportWidth <= 800 ? 1.5 : 2));
+    travel = Math.round(viewportHeight * 2);
     body.style.setProperty('--cullinan-height', `${viewportHeight}px`);
     body.style.setProperty('--cullinan-travel', `${travel}px`);
     sceneTop = scene.getBoundingClientRect().top + window.scrollY;
-    // Fixed positioning must not remove the document's eventual catalogue height.
     anchor.style.minHeight = `${Math.max(catalog.scrollHeight, viewportHeight)}px`;
-    if (oldTravel && released) {
-      window.scrollTo({top: sceneTop + travel + catalogOffset, behavior: 'instant'});
-    } else if (oldTravel && oldProgress > 0) {
-      window.scrollTo({top: sceneTop + oldProgress * travel, behavior: 'instant'});
-    }
-    if (manifest && config && filmKey !== wantedFilmKey()) {
-      try { chooseFilm(); } catch (_) { showRegularCatalog(); return; }
-    }
-    placeFilm();
-    schedule();
+    // Rotation never restarts a playing film. Before playback, choose the appropriate cut.
+    if (manifest && config && !started && config.upright !== Boolean(upright() && manifest.portrait)) chooseFilm();
+    placeFilm(); schedule();
   }
-
-  // Share of the film already played, independent of the closing expansion.
-  function filmProgress() {
-    return clamp(progress / (config ? config.expandStartProgress : DEFAULT_FILM_END));
-  }
-
-  function filmRect() {
-    const small = viewportWidth <= 800;
-    const played = filmProgress();
-    // The poster has the film's proportions, so the frame is known before the clip loads.
-    const size = (sequence && sequence.size) || (config && config.dimensions) || posterSize || [1920, 1080];
-    const sourceWidth = (!sequence && video.videoWidth) || size[0];
-    const sourceHeight = (!sequence && video.videoHeight) || size[1];
-    const contain = Math.min(viewportWidth / sourceWidth, viewportHeight / sourceHeight);
-    let zoom = 1;
-    let lift = 0;
-    if (sourceHeight > sourceWidth) {
-      // An upright film starts whole and grows until it covers the phone.
-      const cover = Math.max(viewportWidth / sourceWidth, viewportHeight / sourceHeight) / contain;
-      zoom = 1 + (Math.min(cover, 1.3) - 1) * easeOut(clamp(played / 0.6));
-    } else if (small) {
-      zoom = 1 + 0.24 * easeOut(clamp(played / 0.8));
-      lift = 30 * (1 - clamp(played / 0.55));
-    }
-    const width = sourceWidth * contain * zoom;
-    const height = sourceHeight * contain * zoom;
-    return {width, height, x: (viewportWidth - width) / 2, y: (viewportHeight - height) / 2 + lift};
-  }
-
-  function placeFilm() {
-    if (!active || released || !viewportWidth) return;
-    const frame = filmRect();
-    const box = {width: `${frame.width}px`, height: `${frame.height}px`, left: `${frame.x}px`, top: `${frame.y}px`};
-    Object.assign(video.style, box);
-    if (sequence) Object.assign(sequence.canvas.style, box);
-  }
-
-  // A bounded neighbourhood of decoded frames, with the desired frame requested first.
-  // The browser HTTP cache can retain compressed files without keeping the whole film decoded.
-  function startSequence(spec, revision) {
-    const canvas = document.createElement('canvas');
-    canvas.className = 'cullinan-film';
-    canvas.width = spec.dimensions[0];
-    canvas.height = spec.dimensions[1];
-    canvas.setAttribute('aria-hidden', 'true');
-    const compact = spec.dimensions[0] < 1920;
-    sequence = {canvas, context: canvas.getContext('2d'), size: spec.dimensions, count: spec.count,
-      fps: spec.fps || (spec.count - 1) / config.duration,
-      images: new Map(), failures: new Set(), pending: 0, shown: -1, wanted: 0, direction: 1,
-      capacity: compact ? 10 : 20, concurrency: compact ? 3 : 4,
-      address: index => assetURL(spec.pattern.replace('{index}', String(index).padStart(3, '0'))) + revision};
-    if (!sequence.context) return showRegularCatalog();
-    drawSequence(config.duration * filmProgress());
-  }
-
-  function frameOrder(film) {
-    const order = [film.wanted];
-    // Two frames forward for each frame behind; reverse the priorities when scrolling back.
-    for (let distance = 1; order.length < film.capacity && distance < film.count; distance += 1) {
-      for (const offset of [distance * 2 - 1, distance * 2, -distance]) {
-        const index = film.wanted + offset * film.direction;
-        if (index >= 0 && index < film.count && !order.includes(index)) order.push(index);
-        if (order.length === film.capacity) break;
-      }
-    }
-    return order;
-  }
-
-  function discardFrame(film, index, entry) {
-    entry.image.onload = null;
-    entry.image.onerror = null;
-    if (!entry.loaded) film.pending -= 1;
-    entry.image.src = '';
-    film.images.delete(index);
-  }
-
-  function loadFrames() {
-    const film = sequence;
-    if (!film || released) return;
-    const order = frameOrder(film);
-    const keep = new Set(order);
-    for (const [index, entry] of film.images) {
-      if (!keep.has(index)) discardFrame(film, index, entry);
-    }
-    for (const index of order) {
-      if (film.pending >= film.concurrency) break;
-      if (film.images.has(index) || film.failures.has(index)) continue;
-      const image = new Image();
-      const entry = {image, loaded: false};
-      film.images.set(index, entry);
-      film.pending += 1;
-      image.decoding = 'async';
-      image.onload = async () => {
-        try { if (image.decode) await image.decode(); }
-        catch (_) { if (image.onerror) image.onerror(); return; }
-        if (sequence !== film || film.images.get(index) !== entry) return;
-        film.pending -= 1;
-        entry.loaded = true;
-        if (!ready && index === film.wanted) {
-          video.after(film.canvas);
-          ready = true;
-          clearTimeout(loadingTimer);
-          placeFilm();
-        }
-        loadFrames();
-        schedule();
-      };
-      image.onerror = () => {
-        if (sequence !== film || film.images.get(index) !== entry) return;
-        film.pending -= 1;
-        film.images.delete(index);
-        film.failures.add(index);
-        // A broken scene must never lock access to the actual catalogue.
-        if (index === film.wanted || film.failures.size > 6) showRegularCatalog();
-        else loadFrames();
-      };
-      image.src = film.address(index);
-    }
-  }
-
-  function drawSequence(time) {
-    const film = sequence;
-    const wanted = Math.min(film.count - 1, Math.floor(Math.max(0, time) * film.fps));
-    if (wanted !== film.wanted) film.direction = wanted > film.wanted ? 1 : -1;
-    film.wanted = wanted;
-    loadFrames();
-    if (sequence !== film) return;
-    // Keep the last painted image while the exact new frame arrives, rather than
-    // jumping to a distant keyframe. The portal follows the painted image too.
-    const entry = film.images.get(wanted);
-    if (!entry || !entry.loaded || wanted === film.shown) return;
-    film.context.drawImage(entry.image, 0, 0, film.canvas.width, film.canvas.height);
-    film.shown = wanted;
-    film.canvas.dataset.frame = String(wanted);
-  }
-
-  function stopSequence() {
-    if (!sequence) return;
-    for (const [index, entry] of sequence.images) discardFrame(sequence, index, entry);
-    sequence.canvas.remove();
-    sequence = undefined;
-  }
-
-  function hideControls(node, hidden, fallback) {
-    if (!node || node.inert === hidden) return;
-    if (hidden && node.contains(document.activeElement)) fallback.focus({preventScroll: true});
-    node.inert = hidden;
-    if (hidden) node.setAttribute('aria-hidden', 'true');
-    else node.removeAttribute('aria-hidden');
-  }
-
   function screenQuad(time) {
     // A film that ends inside the display hands over the whole viewport.
     if (config.portalFill) return [[0, 0], [viewportWidth, 0], [viewportWidth, viewportHeight], [0, viewportHeight]];
@@ -350,276 +187,116 @@
     return `matrix3d(${matrix.join(',')})`;
   }
 
-  function renderPortal(time) {
-    if (!active || !ready || released) return;
-    const portalVisible = clamp((time - config.portalStart) / config.portalFadeDuration);
-    const expansion = clamp((progress - config.expandStartProgress) / (1 - config.expandStartProgress));
-    const amount = easeInOut(expansion);
-    const played = filmProgress();
-    const covering = config.portalFill ? portalVisible : 0;
-    const instrument = expansion === 0 && !config.portalFill;
-    if (instrument !== body.classList.contains('cullinan-instrument')) {
-      body.classList.toggle('cullinan-instrument', instrument);
-      // Phones swap the compact display layout for the real page; soften that cut.
-      if (viewportWidth <= 800 && portalVisible === 1 && catalog.animate) {
-        catalog.animate([{opacity: 0.2}, {opacity: 1}], {duration: 240, easing: 'ease-out'});
-      }
-    }
-    // The stage controls leave as the page takes over, instead of showing around it.
-    body.classList.toggle('cullinan-entering', expansion >= 0.3 || covering >= 0.5);
-    scene.style.setProperty('--cullinan-chrome', String(1 - Math.max(clamp(expansion / 0.3), clamp(covering * 2))));
-    // A full-screen film should not play behind the two large buttons; the skip link stays.
-    const immersed = config.upright ? clamp((played - 0.12) / 0.2) : 0;
-    scene.style.setProperty('--cullinan-actions', String(1 - immersed));
-    body.classList.toggle('cullinan-immersed', immersed >= 1);
-    const controlsHidden = expansion >= 0.3 || covering >= 0.5;
-    hideControls(toolbar, controlsHidden, baseSkip);
-    hideControls(actions, controlsHidden || immersed >= 1, controlsHidden ? baseSkip : skip);
-    if (intro) {
-      intro.style.opacity = String(1 - clamp(played / 0.28));
-      intro.style.visibility = played >= 0.28 ? 'hidden' : 'visible';
-    }
-    const quad = screenQuad(time);
-    const full = [[0, 0], [viewportWidth, 0], [viewportWidth, viewportHeight], [0, viewportHeight]];
-    const expanded = quad.map((point, index) => [
-      mix(point[0], full[index][0], amount), mix(point[1], full[index][1], amount),
-    ]);
-    const length = (first, last) => Math.hypot(last[0] - first[0], last[1] - first[1]);
-    const projectedWidth = (length(expanded[0], expanded[1]) + length(expanded[3], expanded[2])) / 2;
-    const projectedHeight = (length(expanded[0], expanded[3]) + length(expanded[1], expanded[2])) / 2;
-    const surfaceHeight = Math.max(1, viewportWidth * projectedHeight / projectedWidth);
-    // Reveal more of the page as the aperture grows; do not squash its typography.
-    catalog.style.height = `${surfaceHeight}px`;
-    catalog.style.transform = project(expanded, surfaceHeight);
-    catalog.style.opacity = String(expansion > 0 ? 1 : portalVisible);
-    cue.style.opacity = String(1 - clamp(played / 0.12));
-  }
 
-  function seek() {
-    if (!active || !ready || sequence || video.seeking) return;
-    let seekable = false;
-    for (let index = 0; index < video.seekable.length; index += 1) {
-      const start = video.seekable.start(index);
-      const end = video.seekable.end(index);
-      if (end > start && wantedTime >= start && wantedTime <= end) seekable = true;
-    }
-    if (!seekable || wantedTime === lastSeekTime) return;
-    if (Math.abs(video.currentTime - wantedTime) > 0.025) {
-      lastSeekTime = wantedTime;
-      try { video.currentTime = wantedTime; }
-      catch (_) { showRegularCatalog(); }
-    }
+  function hideActions(hidden) {
+    if (hidden && actions.contains(document.activeElement)) skip.focus({preventScroll: true});
+    actions.inert = hidden;
+    if (hidden) actions.setAttribute('aria-hidden', 'true'); else actions.removeAttribute('aria-hidden');
+    scene.style.setProperty('--cullinan-actions', hidden ? '0' : '1');
+    body.classList.toggle('cullinan-immersed', hidden);
   }
-
   function render(now) {
     raf = 0;
-    if (!active) return;
-    target = clamp((window.scrollY - sceneTop) / travel);
-    setReleased(target >= 1);
-    if (released) {
-      // Release decoded frames after entry; scrolling back requests its neighbourhood anew.
-      if (sequence) for (const [index, entry] of sequence.images) discardFrame(sequence, index, entry);
-      progress = 1;
-      lastFrame = 0;
+    if (!active || !config) return;
+    const time = video.currentTime;
+    const played = filmProgress();
+    scene.dataset.filmTime = time.toFixed(3);
+    if (intro) {
+      intro.style.opacity = String(1-clamp(played/0.22));
+      intro.style.visibility = played >= 0.22 ? 'hidden' : 'visible';
+    }
+    hideActions(played > 0.2);
+    const expansion = finishAt === null ? 0 : ease(clamp((now-finishAt)/650));
+    if (time < config.portalStart && finishAt === null) {
+      if (playing) schedule();
       return;
     }
-    // A long gap between frames (a throttled or background tab) simply lands on the target.
-    const elapsed = lastFrame ? now - lastFrame : 16;
-    lastFrame = now;
-    const gap = target - progress;
-    progress = Math.abs(gap) < 0.0004 ? target : progress + gap * (1 - Math.exp(-elapsed / SMOOTHING));
-    placeFilm();
-    if (sequence) {
-      wantedTime = config.duration * filmProgress();
-      drawSequence(wantedTime);
-      if (sequence && sequence.shown >= 0) renderPortal(sequence.shown / sequence.fps);
-    } else if (ready) {
-      wantedTime = Math.min(config.duration, video.duration - 0.04) * filmProgress();
-      seek();
-      renderPortal(video.currentTime);
-    }
-    if (progress === target) lastFrame = 0;
-    else schedule();
+    const fade = clamp((time-config.portalStart)/Math.max(0.1,config.duration-config.portalStart-0.08));
+    const quad = screenQuad(time);
+    const full = [[0,0],[viewportWidth,0],[viewportWidth,viewportHeight],[0,viewportHeight]];
+    const expanded = quad.map((point,i)=>[mix(point[0],full[i][0],expansion),mix(point[1],full[i][1],expansion)]);
+    const length = (a,b)=>Math.hypot(a[0]-b[0],a[1]-b[1]);
+    const w = (length(expanded[0],expanded[1])+length(expanded[3],expanded[2]))/2;
+    const h = (length(expanded[0],expanded[3])+length(expanded[1],expanded[2]))/2;
+    const surface = Math.max(1,viewportWidth*h/w);
+    body.classList.toggle('cullinan-instrument', !config.portalFill && expansion === 0);
+    catalog.style.height = `${surface}px`;
+    catalog.style.transform = project(expanded,surface);
+    catalog.style.opacity = String(expansion > 0 ? 1 : fade);
+    if (expansion === 1) { restore(scene.contains(document.activeElement)); return; }
+    if (playing || finishAt !== null) schedule();
   }
-
-  function schedule() {
-    if (active && !raf) raf = requestAnimationFrame(render);
-  }
-
-  function validateManifest(data) {
-    const portalFill = data.portal === 'viewport';
-    const keyframes = portalFill ? [] : data.portalKeyframes;
-    const size = data.dimensions;
-    if (typeof data.video !== 'string' || !Number.isFinite(data.duration) || data.duration <= 0 ||
-        (size !== undefined && !(Array.isArray(size) && size.length === 2 && size.every(side => Number.isFinite(side) && side > 0))) ||
-        !Number.isFinite(data.portalStart) || data.portalStart < 0 || data.portalStart >= data.duration ||
-        !Array.isArray(keyframes) || (!portalFill && !keyframes.length) || keyframes.some(frame =>
-          !Number.isFinite(frame.time) || !Array.isArray(frame.quad) || frame.quad.length !== 4 ||
-          frame.quad.some(point => !Array.isArray(point) || point.length !== 2 || !point.every(Number.isFinite)))) {
-      throw new Error('Incomplete cinematic manifest');
-    }
-    const remaining = data.duration - data.portalStart;
-    const stills = spec => (spec && typeof spec.pattern === 'string' && spec.pattern.includes('{index}') &&
-      Number.isInteger(spec.count) && spec.count >= 2 && spec.count <= 400 &&
-      (spec.fps === undefined || (Number.isFinite(spec.fps) && spec.fps > 0 && spec.fps <= 60)) &&
-      Array.isArray(spec.dimensions) && spec.dimensions.length === 2 &&
-      spec.dimensions.every(side => Number.isFinite(side) && side > 0) ? spec : undefined);
-    return {
-      ...data,
-      frames: stills(data.frames),
-      framesCompact: stills(data.framesCompact),
-      portalFill,
-      portalKeyframes: [...keyframes].sort((a, b) => a.time - b.time),
-      expandStartProgress: clamp(Number.isFinite(data.expandStartProgress) ? data.expandStartProgress : DEFAULT_FILM_END, 0.6, 0.95),
-      // The full-viewport handover may take the film's whole closing stretch.
-      portalFadeDuration: portalFill ? Math.max(0.08, remaining * 0.9) : Math.max(0.08, Math.min(0.25, remaining / 3)),
-    };
-  }
-
-  function uprightPhone() {
-    const width = document.documentElement.clientWidth;
-    return width <= 800 && window.innerHeight > width * 1.2;
-  }
-
-  function wantsUpright() {
-    return Boolean(manifest && manifest.portrait) && uprightPhone();
-  }
-
-  function wantedFilmKey() {
-    // Touch laptops and wide tablets deserve full resolution too.
-    return wantsUpright() ? 'portrait' : (document.documentElement.clientWidth <= 800 ? 'compact' : 'wide');
-  }
-
-  function armLoadingTimeout() {
-    clearTimeout(loadingTimer);
-    loadingTimer = setTimeout(() => showRegularCatalog(scene.contains(document.activeElement)), 10000);
-  }
-
-  // Pick the film for the current window: upright or wide, and how detailed its stills are.
-  function chooseFilm() {
-    filmKey = wantedFilmKey();
-    clipGeneration += 1;
-    let next;
-    if (wantsUpright()) {
-      // Upright phones get their own film, with its own timings and handover.
-      try {
-        next = {...validateManifest(manifest.portrait), upright: true};
-      } catch (_) { /* keep the wide film */ }
-    }
-    config = next || validateManifest(manifest);
-    if (!config.upright) posterSize = undefined;
-    body.classList.toggle('cullinan-portrait', Boolean(config.upright));
-    if (config.poster) {
-      const poster = assetURL(config.poster);
-      if (video.poster !== poster) video.poster = poster;
-    }
-    stopSequence();
-    ready = false;
-    lastSeekTime = -1;
-    video.removeAttribute('src');
-    video.load();
-    if (mediaObjectURL) URL.revokeObjectURL(mediaObjectURL);
-    mediaObjectURL = undefined;
-    armLoadingTimeout();
-    // The film is drawn from numbered stills in every browser; the video file is only a fallback.
-    const compact = filmKey === 'compact';
-    const spec = (compact && config.framesCompact) || config.frames;
-    if (spec) startSequence(spec, revision);
-    else loadClip(revision);
-    placeFilm();
-  }
-
-  function assetURL(path) {
-    const base = new URL(scene.dataset.mediaBase || scene.dataset.manifest, window.location.href);
-    const url = new URL(path, base);
-    if (url.origin !== base.origin || !['http:', 'https:'].includes(url.protocol)) {
-      throw new Error('Unexpected cinematic media origin');
-    }
-    return url.href;
-  }
-
-  // The local Django static server does not provide byte-range seeking.
-  // Load this short clip once; an object URL provides reliable local scrubbing.
-  function loadClip(revision) {
-    const generation = clipGeneration;
-    fetch(assetURL(config.video) + revision, {signal: abort.signal, cache: 'force-cache'})
-      .then(response => {
-        if (!response.ok) throw new Error('Cinematic video unavailable');
-        return response.blob();
-      })
-      .then(blob => {
-        if (!active || generation !== clipGeneration) return;
-        if (!blob.size) throw new Error('Cinematic video is empty');
-        mediaObjectURL = URL.createObjectURL(blob);
-        // Safari keeps to preload="none" even after load(); ask for the data outright.
-        video.preload = 'auto';
-        video.src = mediaObjectURL;
-        video.load();
-      })
-      .catch(() => {
-        if (active && generation === clipGeneration) showRegularCatalog(scene.contains(document.activeElement));
-      });
-  }
-
-  // Progressive enhancement starts with the poster, and has a bounded fallback.
-  moveIntoCatalog(document.querySelector('.site-header'), true);
-  moveIntoCatalog(document.querySelector('.demo-strip'), true);
-  moveIntoCatalog(document.querySelector('.site-footer'));
-  scene.hidden = false;
-  body.classList.add('cullinan-enhanced');
-  if (uprightPhone() && scene.dataset.portraitPoster) {
-    const size = (scene.dataset.portraitSize || '').split('x').map(Number);
-    if (size.length === 2 && size.every(side => Number.isFinite(side) && side > 0)) {
-      posterSize = size;
-      video.poster = scene.dataset.portraitPoster;
-    }
-  }
-  catalog.inert = true;
-  catalog.setAttribute('aria-hidden', 'true');
-  scene.querySelectorAll('.cullinan-skip').forEach(link =>
-    link.addEventListener('click', onSkip, {signal: abort.signal}));
-  if (baseSkip) baseSkip.addEventListener('click', onSkip, {signal: abort.signal});
-  window.addEventListener('scroll', schedule, {passive: true, signal: abort.signal});
-  window.addEventListener('resize', () => {
-    cancelAnimationFrame(resizeFrame);
-    resizeFrame = requestAnimationFrame(measure);
-  }, {passive: true, signal: abort.signal});
-  motion.addEventListener('change', event => {
-    if (event.matches) showRegularCatalog(scene.contains(document.activeElement));
-  }, {signal: abort.signal});
-  video.addEventListener('error', () => showRegularCatalog(scene.contains(document.activeElement)), {signal: abort.signal});
-  video.addEventListener('seeked', () => {
-    if (sequence) return;
-    renderPortal(video.currentTime);
-    seek();
-  }, {signal: abort.signal});
-  const readyWhenSeekable = () => {
-    if (ready || !active || sequence || video.readyState < 2) return;
-    if (!config || !video.videoWidth || !video.videoHeight || !Number.isFinite(video.duration)) return showRegularCatalog();
-    // Retain the loading timeout until this browser can actually scrub the clip.
-    if (!video.seekable.length || video.seekable.end(video.seekable.length - 1) <= 0) return;
-    clearTimeout(loadingTimer);
-    ready = true;
-    measure();
-  };
-  video.addEventListener('loadeddata', readyWhenSeekable, {signal: abort.signal});
-  video.addEventListener('canplay', readyWhenSeekable, {signal: abort.signal});
-  armLoadingTimeout();
-  measure();
-
-  fetch(scene.dataset.manifest, {signal: abort.signal, cache: 'no-cache'})
-    .then(response => {
-      if (!response.ok) throw new Error('Cinematic assets unavailable');
-      return response.json();
-    })
-    .then(data => {
+  function schedule() { if (active && !raf) raf = requestAnimationFrame(render); }
+  async function start() {
+    wantsPlay = true;
+    if (!active || !ready || playing || document.hidden || finishAt !== null) return;
+    // Set immediately so rapid wheel/click events cannot create overlapping play attempts.
+    playing = true;
+    try {
+      await video.play();
       if (!active) return;
-      manifest = data;
-      // Media stays in the browser cache; a new revision in the manifest replaces it.
-      revision = typeof data.revision === 'string' && data.revision ? `?v=${encodeURIComponent(data.revision)}` : '';
-      chooseFilm();
-    })
-    .catch(() => {
-      if (active) showRegularCatalog(scene.contains(document.activeElement));
-    });
+      started = true;
+      state('playing'); schedule();
+    } catch (_) {
+      if (!active) return;
+      playing = false;
+      state('ready', 'Натисніть, щоб відтворити відео');
+    }
+  }
+  function pause() {
+    wantsPlay = false; resumeOnVisible = false; playing = false;
+    video.pause(); clearTimeout(stallTimer); state('paused');
+  }
+
+  move(document.querySelector('.site-header'), true);
+  move(document.querySelector('.demo-strip'), true);
+  move(document.querySelector('.site-footer'));
+  scene.hidden = false; body.classList.add('cullinan-enhanced');
+  catalog.inert = true; catalog.setAttribute('aria-hidden','true');
+  play.hidden = false; status.hidden = false;
+  video.muted = true; video.playsInline = true;
+  scene.querySelectorAll('.cullinan-skip').forEach(link => link.addEventListener('click',event=>{
+    event.preventDefault(); restore(true);
+  },{signal:abort.signal}));
+  baseSkip?.addEventListener('click',event=>{event.preventDefault();restore(true);},{signal:abort.signal});
+  play.addEventListener('click',()=>{ if (playing) pause(); else start(); },{signal:abort.signal});
+  window.addEventListener('scroll',()=>{
+    if (!active) return;
+    const offset = window.scrollY-sceneTop;
+    // The visitor can always scroll past the scene, including on a slow/broken connection.
+    if (offset >= travel) { restore(false); return; }
+    if (offset > 8 && !started) start();
+  },{passive:true,signal:abort.signal});
+  window.addEventListener('keydown',event=>{if(event.key==='Escape')restore(true);},{signal:abort.signal});
+  window.addEventListener('resize',()=>{cancelAnimationFrame(resizeRAF);resizeRAF=requestAnimationFrame(measure);},{passive:true,signal:abort.signal});
+  motion.addEventListener('change',event=>{if(event.matches)restore(scene.contains(document.activeElement));},{signal:abort.signal});
+  document.addEventListener('visibilitychange',()=>{
+    if (document.hidden) {
+      resumeOnVisible = playing;
+      if (playing) { playing=false;video.pause();clearTimeout(stallTimer); }
+    } else if (resumeOnVisible) { resumeOnVisible=false;start(); }
+  },{signal:abort.signal});
+  video.addEventListener('canplay',()=>{
+    if (!active || !objectURL || ready) return;
+    clearTimeout(loadTimer); ready=true; state('ready','Прокрутіть або натисніть'); placeFilm();
+    if (wantsPlay) start();
+  },{signal:abort.signal});
+  video.addEventListener('playing',()=>{clearTimeout(stallTimer);if(active){playing=true;state('playing');schedule();}},{signal:abort.signal});
+  video.addEventListener('waiting',()=>{
+    if (!active || !started || document.hidden) return;
+    clearTimeout(stallTimer);state('waiting','Відновлюємо відтворення…');
+    stallTimer=setTimeout(()=>restore(scene.contains(document.activeElement)),6000);
+  },{signal:abort.signal});
+  video.addEventListener('error',()=>restore(scene.contains(document.activeElement)),{signal:abort.signal});
+  video.addEventListener('ended',()=>{
+    if (!active) return;
+    playing=false;clearTimeout(stallTimer);play.hidden=true;
+    state('ending'); finishAt=performance.now(); schedule();
+  },{signal:abort.signal});
+  measure();state('loading','Готуємо відео…');
+  loadTimer=setTimeout(()=>restore(),20000);
+  fetch(scene.dataset.manifest,{signal:abort.signal,cache:'no-cache'})
+    .then(r=>{if(!r.ok)throw Error('Manifest unavailable');return r.json();})
+    .then(data=>{if(active){manifest=data;chooseFilm();}})
+    .catch(()=>{if(active)restore();});
 })();
