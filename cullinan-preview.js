@@ -47,6 +47,12 @@
     download?.abort();
     clearTimeout(loadTimer); clearTimeout(stallTimer);
     cancelAnimationFrame(raf); cancelAnimationFrame(resizeRAF);
+    const quality = video.getVideoPlaybackQuality?.();
+    if (quality) {
+      scene.dataset.decodedFrames = String(quality.totalVideoFrames);
+      scene.dataset.droppedFrames = String(quality.droppedVideoFrames);
+    }
+    scene.dataset.lastFilmTime = String(video.currentTime);
     video.pause(); video.removeAttribute('src'); video.load();
     if (objectURL) URL.revokeObjectURL(objectURL);
     catalog.inert = false;
@@ -263,11 +269,11 @@
   window.addEventListener('scroll',()=>{
     if (!active) return;
     const offset = window.scrollY-sceneTop;
-    // The visitor can always scroll past the scene, including on a slow/broken connection.
-    if (offset >= travel) { restore(false); return; }
+    // Wheel inertia must not skip the door opening. The visible catalogue link,
+    // Escape and End remain immediate exits, including while loading or paused.
     if (offset > 8 && !started) start();
   },{passive:true,signal:abort.signal});
-  window.addEventListener('keydown',event=>{if(event.key==='Escape')restore(true);},{signal:abort.signal});
+  window.addEventListener('keydown',event=>{if(event.key==='Escape' || event.key==='End')restore(true);},{signal:abort.signal});
   window.addEventListener('resize',()=>{cancelAnimationFrame(resizeRAF);resizeRAF=requestAnimationFrame(measure);},{passive:true,signal:abort.signal});
   motion.addEventListener('change',event=>{if(event.matches)restore(scene.contains(document.activeElement));},{signal:abort.signal});
   document.addEventListener('visibilitychange',()=>{
