@@ -78,15 +78,7 @@ html:has(.cullinan-enhanced){scroll-behavior:auto}
 @media(max-width:800px) and (max-height:740px){.cullinan-enhanced .cullinan-intro{top:96px}.cullinan-intro h1{font-size:34px;max-width:14ch}.cullinan-intro p{margin-top:12px;max-width:100%}}
 @media(max-width:800px) and (max-height:620px){.cullinan-enhanced .cullinan-intro{top:86px}.cullinan-intro h1{font-size:30px}.cullinan-intro p{font-size:14px;line-height:1.5}}
 
-/* Continuous native playback: controls remain reachable throughout the film. */
-.cullinan-playback-controls{display:flex;align-items:center;gap:12px}
-.cullinan-play{min-height:44px;white-space:nowrap;background:var(--paper);color:var(--ink);border:1px solid var(--line)}
-.cullinan-play[hidden],.cullinan-play-status[hidden]{display:none}
-.cullinan-play-status{font-size:13px;color:var(--muted)}
-.cullinan-enhanced .cullinan-toolbar,.cullinan-enhanced .cullinan-caption{opacity:1}
-.cullinan-enhanced .cullinan-toolbar{z-index:24}
-.cullinan-enhanced .cullinan-caption{z-index:24}
-.cullinan-enhanced #cullinan-catalog{z-index:21}
+/* The video remains renderable below the canvas so WebKit presents seeked frames. */
+.cullinan-load-status{font-size:12px;color:var(--muted)}
+.cullinan-load-status[hidden]{display:none}
 .cullinan-immersed .cullinan-actions{visibility:hidden}
-@media(max-width:800px){.cullinan-actions{bottom:116px}.cullinan-playback-controls{gap:8px}.cullinan-play-status{font-size:12px}.cullinan-caption{gap:8px}}
-@media(orientation:landscape) and (max-height:520px){.cullinan-actions{bottom:72px}.cullinan-play-status{display:none}}
