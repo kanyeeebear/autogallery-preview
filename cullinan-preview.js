@@ -27,7 +27,7 @@
   const clamp = (n, lo = 0, hi = 1) => Math.min(hi, Math.max(lo, n));
   const mix = (a, b, n) => a + (b - a) * n;
   const ease = n => n * n * (3 - 2 * n);
-  const revision = '?v=continuous-20261116-1';
+  let revision = '?v=continuous-20261116-1';
 
   function state(name, message = '') {
     scene.dataset.playback = name;
@@ -303,6 +303,6 @@
   loadTimer=setTimeout(()=>restore(),20000);
   fetch(scene.dataset.manifest,{signal:abort.signal,cache:'no-cache'})
     .then(r=>{if(!r.ok)throw Error('Manifest unavailable');return r.json();})
-    .then(data=>{if(active){manifest=data;chooseFilm();}})
+    .then(data=>{if(active){manifest=data;revision += '-' + encodeURIComponent(data.revision || 'original');chooseFilm();}})
     .catch(()=>{if(active)restore();});
 })();
