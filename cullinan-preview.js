@@ -23,7 +23,7 @@
   if (!context) return;
   const abort = new AbortController();
   const moved = [];
-  let active = true, ready = false, released = false, inFlight = false;
+  let active = true, ready = false, released = false, inFlight = false, primed = false;
   let manifest, config, objectURL, download, generation = 0;
   let raf = 0, resizeRAF = 0, frameCallback = 0, loadTimer, seekTimer;
   let viewportWidth = 0, viewportHeight = 0, travel = 0, sceneTop = 0;
@@ -78,7 +78,7 @@
     download?.abort(); download=new AbortController();
     clearTimeout(loadTimer);clearTimeout(seekTimer);
     if(frameCallback)video.cancelVideoFrameCallback(frameCallback);
-    frameCallback=0;ready=false;inFlight=false;paintedTime=-1;
+    frameCallback=0;ready=false;inFlight=false;primed=false;paintedTime=-1;
     canvas.remove(); video.pause();video.removeAttribute('src');video.load();
     if(objectURL)URL.revokeObjectURL(objectURL);objectURL=undefined;
     config={...validate(upright()&&manifest.portrait?manifest.portrait:manifest),upright:Boolean(upright()&&manifest.portrait)};
@@ -271,7 +271,14 @@
   motion.addEventListener('change',e=>{if(e.matches)restore(scene.contains(document.activeElement));},{signal:abort.signal});
   document.addEventListener('visibilitychange',()=>{if(!document.hidden)schedule();},{signal:abort.signal});
   video.addEventListener('seeked',schedule,{signal:abort.signal});
-  video.addEventListener('canplay',()=>{placeFilm();schedule();},{signal:abort.signal});
+  video.addEventListener('canplay',()=>{
+    if(!active || !objectURL || !config)return;
+    placeFilm();
+    // Paused media may not present its initial frame until an explicit seek.
+    // Prime one adjacent frame, then the normal queue immediately returns to the scroll target.
+    if(!ready && !primed){primed=true;video.currentTime=1/config.fps;}
+    schedule();
+  },{signal:abort.signal});
   video.addEventListener('error',()=>restore(scene.contains(document.activeElement)),{signal:abort.signal});
   measure();loadTimer=setTimeout(()=>restore(),30000);
   fetch(scene.dataset.manifest,{signal:abort.signal,cache:'no-cache'})
