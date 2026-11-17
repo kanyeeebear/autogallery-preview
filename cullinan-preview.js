@@ -6,172 +6,141 @@
   const motion = window.matchMedia('(prefers-reduced-motion: reduce)');
   if (!scene || !catalog || !anchor || motion.matches || !('inert' in HTMLElement.prototype) ||
       catalog.querySelector('.errorlist, [role=alert]')) return;
+
   const body = document.body;
   const video = scene.querySelector('video');
-  const cue = scene.querySelector('.cullinan-scroll-cue');
-  const status = scene.querySelector('.cullinan-load-status');
+  const play = scene.querySelector('.cullinan-play');
+  const status = scene.querySelector('.cullinan-play-status');
   const intro = scene.querySelector('.cullinan-intro');
   const actions = scene.querySelector('.cullinan-actions');
-  const toolbar = scene.querySelector('.cullinan-toolbar');
   const skip = scene.querySelector('.cullinan-skip');
   const title = catalog.querySelector('#catalog-title');
   const baseSkip = document.querySelector('.skip-link');
-  if (!video || !status || !cue) return;
+  if (!video || !play || !status) return;
   const abort = new AbortController();
   const moved = [];
-  let active = true, ready = false, released = false, inFlight = false, primed = false;
+  let active = true, ready = false, started = false, wantsPlay = false, playing = false;
   let manifest, config, objectURL, download, generation = 0;
-  let raf = 0, resizeRAF = 0, frameCallback = 0, loadTimer, seekTimer;
+  let raf = 0, resizeRAF = 0, loadTimer, stallTimer, finishAt = null;
   let viewportWidth = 0, viewportHeight = 0, travel = 0, sceneTop = 0;
-  let progress = 0, paintedTime = -1, wantedTime = 0, seekStarted = 0;
-  let revision = '';
+  let resumeOnVisible = false;
   const clamp = (n, lo = 0, hi = 1) => Math.min(hi, Math.max(lo, n));
-  const mix = (a,b,n) => a+(b-a)*n;
-  const ease = n => n*n*(3-2*n);
-  const FILM_END = 0.82;
+  const mix = (a, b, n) => a + (b - a) * n;
+  const ease = n => n * n * (3 - 2 * n);
+  let revision = '?v=continuous-20261116-1';
 
-  function armLoadTimeout(){clearTimeout(loadTimer);if(!document.hidden)loadTimer=setTimeout(()=>restore(scene.contains(document.activeElement)),30000);}
-  function armSeekTimeout(){clearTimeout(seekTimer);if(!document.hidden&&!released)seekTimer=setTimeout(()=>restore(scene.contains(document.activeElement)),4000);}
-  function focusCatalog() { title?.setAttribute('tabindex','-1'); title?.focus({preventScroll:true}); }
+  function state(name, message = '') {
+    scene.dataset.playback = name;
+    status.textContent = message;
+    play.textContent = playing ? 'Пауза' : (started ? 'Продовжити' : 'Відкрити двері');
+    play.setAttribute('aria-label', playing ? 'Призупинити відео' : (started ? 'Продовжити відео' : 'Відкрити двері: відтворити відео'));
+  }
+  function focusCatalog() {
+    title?.setAttribute('tabindex', '-1');
+    title?.focus({preventScroll: true});
+  }
   function restore(focus = false) {
     if (!active) return;
-    active=false; generation++; abort.abort(); download?.abort();
-    clearTimeout(loadTimer); clearTimeout(seekTimer);
+    active = false;
+    generation += 1;
+    abort.abort();
+    download?.abort();
+    clearTimeout(loadTimer); clearTimeout(stallTimer);
     cancelAnimationFrame(raf); cancelAnimationFrame(resizeRAF);
-    if (frameCallback) video.cancelVideoFrameCallback(frameCallback);
+    const quality = video.getVideoPlaybackQuality?.();
+    if (quality) {
+      scene.dataset.decodedFrames = String(quality.totalVideoFrames);
+      scene.dataset.droppedFrames = String(quality.droppedVideoFrames);
+    }
+    scene.dataset.lastFilmTime = String(video.currentTime);
     video.pause(); video.removeAttribute('src'); video.load();
     if (objectURL) URL.revokeObjectURL(objectURL);
-    catalog.inert=false; catalog.removeAttribute('aria-hidden'); catalog.removeAttribute('style');
+    catalog.inert = false;
+    catalog.removeAttribute('aria-hidden'); catalog.removeAttribute('style');
     anchor.style.removeProperty('min-height');
-    body.classList.remove('cullinan-enhanced','cullinan-instrument','cullinan-portrait','cullinan-immersed','cullinan-released','cullinan-entering');
+    body.classList.remove('cullinan-enhanced', 'cullinan-instrument', 'cullinan-portrait', 'cullinan-immersed', 'cullinan-released');
     body.style.removeProperty('--cullinan-height'); body.style.removeProperty('--cullinan-travel');
-    for(const {node,marker} of moved) marker.replaceWith(node);
-    scene.hidden=true; window.scrollTo({top:0,behavior:'instant'});
-    if(focus)focusCatalog();
+    for (const {node, marker} of moved) marker.replaceWith(node);
+    scene.hidden = true;
+    window.scrollTo({top: 0, behavior: 'instant'});
+    if (focus) focusCatalog();
   }
-  function move(node,prepend=false) {
-    if(!node)return;
-    const marker=document.createComment('cinematic original position'); node.before(marker);moved.push({node,marker});
-    if(prepend)catalog.prepend(node);else catalog.append(node);
+  function move(node, prepend = false) {
+    if (!node) return;
+    const marker = document.createComment('cinematic original position');
+    node.before(marker); moved.push({node, marker});
+    if (prepend) catalog.prepend(node); else catalog.append(node);
   }
-  function upright() {const w=document.documentElement.clientWidth;return w<=800 && window.innerHeight>w*1.2;}
+  function upright() {
+    return document.documentElement.clientWidth <= 800 && window.innerHeight > document.documentElement.clientWidth * 1.2;
+  }
   function asset(path) {
-    const base=new URL(scene.dataset.mediaBase || scene.dataset.manifest,window.location.href);
-    const url=new URL(path,base);
-    if(url.origin!==base.origin || !['http:','https:'].includes(url.protocol))throw Error('Invalid film origin');
+    const base = new URL(scene.dataset.mediaBase || scene.dataset.manifest, window.location.href);
+    const url = new URL(path, base);
+    if (url.origin !== base.origin || !['http:', 'https:'].includes(url.protocol)) throw Error('Invalid film origin');
     return url.href;
   }
   function validate(data) {
-    if(!data || typeof data.video!=='string' || !Number.isFinite(data.duration) || data.duration<=0 ||
-       !Number.isFinite(data.portalStart) || data.portalStart<0 || data.portalStart>=data.duration)throw Error('Invalid film');
-    const fill=data.portal==='viewport', frames=data.portalKeyframes;
-    if(!fill && (!Array.isArray(frames) || !frames.length || frames.some(f=>!Number.isFinite(f.time) ||
-      !Array.isArray(f.quad) || f.quad.length!==4 || f.quad.some(p=>!Array.isArray(p)||p.length!==2||!p.every(Number.isFinite)))))throw Error('Invalid portal');
-    const fps=data.frames?.fps || (fill?24:30);
-    if(!Number.isFinite(fps)||fps<1||fps>60)throw Error('Invalid frame rate');
-    return {...data,fps,portalFill:fill,portalKeyframes:fill?[]:[...frames].sort((a,b)=>a.time-b.time)};
+    if (!data || typeof data.video !== 'string' || !Number.isFinite(data.duration) || data.duration <= 0 ||
+        !Number.isFinite(data.portalStart) || data.portalStart < 0 || data.portalStart >= data.duration) throw Error('Invalid film');
+    const fill = data.portal === 'viewport';
+    const frames = data.portalKeyframes;
+    if (!fill && (!Array.isArray(frames) || !frames.length || frames.some(f => !Number.isFinite(f.time) ||
+      !Array.isArray(f.quad) || f.quad.length !== 4 || f.quad.some(p => !Array.isArray(p) || p.length !== 2 || !p.every(Number.isFinite))))) throw Error('Invalid portal');
+    return {...data, portalFill: fill, portalKeyframes: fill ? [] : [...frames].sort((a,b) => a.time-b.time)};
   }
   async function chooseFilm() {
-    const token=++generation;
-    download?.abort(); download=new AbortController();
-    clearTimeout(loadTimer);clearTimeout(seekTimer);
-    if(frameCallback)video.cancelVideoFrameCallback(frameCallback);
-    frameCallback=0;ready=false;inFlight=false;primed=false;paintedTime=-1;
-    video.pause();video.removeAttribute('src');video.load();
-    if(objectURL)URL.revokeObjectURL(objectURL);objectURL=undefined;
-    config={...validate(upright()&&manifest.portrait?manifest.portrait:manifest),upright:Boolean(upright()&&manifest.portrait)};
-    body.classList.toggle('cullinan-portrait',config.upright);
-    video.poster=asset(config.poster);
-    scene.dataset.playback='loading';status.hidden=false;status.textContent='Готуємо анімацію…';
-    placeFilm();
-    armLoadTimeout();
+    const token = ++generation;
+    download?.abort(); download = new AbortController();
+    ready = false;
+    config = {...validate(upright() && manifest.portrait ? manifest.portrait : manifest), upright: Boolean(upright() && manifest.portrait)};
+    body.classList.toggle('cullinan-portrait', config.upright);
+    video.poster = asset(config.poster);
+    state('loading', 'Готуємо відео…');
+    clearTimeout(loadTimer);
+    loadTimer = setTimeout(() => restore(scene.contains(document.activeElement)), 20000);
+    // Download one compact movie completely before playing. No range seeking, no image queue,
+    // no reassignment of currentTime while scrolling. The native decoder owns frame pacing.
     try {
-      const r=await fetch(asset(config.video)+revision,{signal:download.signal,cache:'force-cache'});
-      if(!r.ok)throw Error('Film unavailable');const blob=await r.blob();
-      if(!active||token!==generation)return;if(!blob.size)throw Error('Empty film');
-      objectURL=URL.createObjectURL(blob);
-      video.muted=true;video.defaultMuted=true;video.playsInline=true;video.preload='auto';
-      // Register before loading so even the initial decoded frame is observed.
-      watchFrame(token);video.src=objectURL;video.load();
-    } catch(error) {if(active&&token===generation&&error.name!=='AbortError')restore(scene.contains(document.activeElement));}
+      const response = await fetch(asset(config.video) + revision, {signal: download.signal, cache: 'force-cache'});
+      if (!response.ok) throw Error('Film unavailable');
+      const blob = await response.blob();
+      if (!active || token !== generation) return;
+      if (!blob.size) throw Error('Empty film');
+      video.pause(); video.removeAttribute('src'); video.load();
+      if (objectURL) URL.revokeObjectURL(objectURL);
+      objectURL = URL.createObjectURL(blob);
+      video.muted = true; video.defaultMuted = true; video.playsInline = true; video.preload = 'auto';
+      video.src = objectURL; video.load();
+    } catch (error) {
+      if (active && token === generation && error.name !== 'AbortError') restore(scene.contains(document.activeElement));
+    }
+    placeFilm();
   }
-  function watchFrame(token) {
-    if(!video.requestVideoFrameCallback)return;
-    frameCallback=video.requestVideoFrameCallback((now,metadata)=>{
-      if(!active||token!==generation)return;
-      frameCallback=0;
-      scene.dataset.presentedTime=metadata.mediaTime.toFixed(4);
-      watchFrame(token);
-    });
-  }
-  function commitSeek() {
-    const token=generation;
-    // Native video owns its displayed surface. Allow one render turn after seeked;
-    // requestVideoFrameCallback is diagnostic only (paused/occluded videos can suppress it).
-    requestAnimationFrame(()=>{
-      if(!active||token!==generation||video.seeking||video.readyState<2)return;
-      paintedTime=video.currentTime;
-      scene.dataset.frame=String(Math.round(paintedTime*config.fps));
-      scene.dataset.filmTime=paintedTime.toFixed(4);
-      scene.dataset.seekMs=String(Math.round(inFlight?performance.now()-seekStarted:0));
-      inFlight=false;clearTimeout(seekTimer);
-      if(!ready){ready=true;clearTimeout(loadTimer);status.hidden=true;scene.dataset.playback='scrub';placeFilm();}
-      renderPortal();schedule();
-    });
-  }
-  function updateTarget() {
-    progress=clamp((window.scrollY-sceneTop)/travel);
-    if(!config)return;
-    const lastFrame=Math.max(0,Math.round(config.duration*config.fps)-1);
-    wantedTime=Math.round(clamp(progress/FILM_END)*lastFrame)/config.fps;
-    scene.dataset.targetTime=wantedTime.toFixed(4);
-  }
-  function seek() {
-    if(!active||!ready||released||inFlight||video.seeking||document.hidden)return;
-    if(Math.abs(wantedTime-paintedTime)<0.5/config.fps)return;
-    // One seek at a time. Never cancel a decoder operation on the next scroll event.
-    // Once it paints, the newest scroll position wins; no stale queue to play through.
-    inFlight=true;seekStarted=performance.now();
-    armSeekTimeout();
-    try{video.currentTime=wantedTime;}catch(_){restore();}
-  }
-  function setReleased(value) {
-    if(released===value)return;
-    released=value;body.classList.toggle('cullinan-released',value);
-    if(value){body.classList.remove('cullinan-instrument','cullinan-immersed');clearTimeout(seekTimer);inFlight=false;}
-    else hide(toolbar,false,baseSkip);
-    if(!value && catalog.contains(document.activeElement))skip.focus({preventScroll:true});
-    catalog.inert=!value;
-    if(value){catalog.removeAttribute('aria-hidden');catalog.style.removeProperty('height');}
-    else catalog.setAttribute('aria-hidden','true');
-    if(value && scene.contains(document.activeElement))focusCatalog();
-  }
-  function measure() {
-    if(!active)return;
-    const width=document.documentElement.clientWidth;
-    const changed=config && config.upright!==Boolean(upright()&&manifest?.portrait);
-    // Safari's collapsing address bar must not move the scroll-to-frame mapping.
-    if(width===viewportWidth && width<=800 && Math.abs(window.innerHeight-viewportHeight)<120 && !changed){schedule();return;}
-    const oldTravel=travel, oldProgress=oldTravel?clamp((window.scrollY-sceneTop)/oldTravel):0;
-    const past=Math.max(0,window.scrollY-sceneTop-oldTravel);
-    viewportWidth=width;viewportHeight=window.innerHeight;
-    travel=Math.round(viewportHeight*(width<=800?2:2.5));
-    body.style.setProperty('--cullinan-height',`${viewportHeight}px`);body.style.setProperty('--cullinan-travel',`${travel}px`);
-    sceneTop=scene.getBoundingClientRect().top+window.scrollY;
-    anchor.style.minHeight=`${Math.max(catalog.scrollHeight,viewportHeight)}px`;
-    if(oldTravel && (released||oldProgress>0))window.scrollTo({top:sceneTop+(released?travel+past:oldProgress*travel),behavior:'instant'});
-    if(changed)chooseFilm();
-    placeFilm();schedule();
-  }
+  function filmProgress() { return config ? clamp(video.currentTime / config.duration) : 0; }
   function filmRect() {
-    const size=config?.dimensions || ((config?.upright || (!config && upright()))?[1080,1920]:[1920,1080]);
-    const w=video.videoWidth||size[0],h=video.videoHeight||size[1];
-    const scale=Math.min(viewportWidth/w,viewportHeight/h);
-    return {width:w*scale,height:h*scale,x:(viewportWidth-w*scale)/2,y:(viewportHeight-h*scale)/2};
+    const size = config?.dimensions || (config?.upright ? [1080,1920] : [1920,1080]);
+    const w = video.videoWidth || size[0], h = video.videoHeight || size[1];
+    const scale = Math.min(viewportWidth / w, viewportHeight / h);
+    // Stable framing: the camera move is already authored in the film.
+    return {width: w*scale, height: h*scale, x: (viewportWidth-w*scale)/2, y: (viewportHeight-h*scale)/2};
   }
   function placeFilm() {
-    const f=filmRect(),box={width:`${f.width}px`,height:`${f.height}px`,left:`${f.x}px`,top:`${f.y}px`};
-    Object.assign(video.style,box);
+    const f = filmRect();
+    Object.assign(video.style, {width: `${f.width}px`, height: `${f.height}px`, left: `${f.x}px`, top: `${f.y}px`});
+  }
+  function measure() {
+    if (!active) return;
+    viewportWidth = document.documentElement.clientWidth;
+    viewportHeight = window.innerHeight;
+    travel = Math.round(viewportHeight * 2);
+    body.style.setProperty('--cullinan-height', `${viewportHeight}px`);
+    body.style.setProperty('--cullinan-travel', `${travel}px`);
+    sceneTop = scene.getBoundingClientRect().top + window.scrollY;
+    anchor.style.minHeight = `${Math.max(catalog.scrollHeight, viewportHeight)}px`;
+    // Rotation never restarts a playing film. Before playback, choose the appropriate cut.
+    if (manifest && config && !started && config.upright !== Boolean(upright() && manifest.portrait)) chooseFilm();
+    placeFilm(); schedule();
   }
   function screenQuad(time) {
     // A film that ends inside the display hands over the whole viewport.
@@ -225,71 +194,115 @@
   }
 
 
+  function hideActions(hidden) {
+    if (hidden && actions.contains(document.activeElement)) skip.focus({preventScroll: true});
+    actions.inert = hidden;
+    if (hidden) actions.setAttribute('aria-hidden', 'true'); else actions.removeAttribute('aria-hidden');
+    scene.style.setProperty('--cullinan-actions', hidden ? '0' : '1');
+    body.classList.toggle('cullinan-immersed', hidden);
+  }
+  function render(now) {
+    raf = 0;
+    if (!active || !config) return;
+    const time = video.currentTime;
+    const played = filmProgress();
+    scene.dataset.filmTime = time.toFixed(3);
+    if (intro) {
+      intro.style.opacity = String(1-clamp(played/0.22));
+      intro.style.visibility = played >= 0.22 ? 'hidden' : 'visible';
+    }
+    hideActions(played > 0.2);
+    const expansion = finishAt === null ? 0 : ease(clamp((now-finishAt)/650));
+    if (time < config.portalStart && finishAt === null) {
+      if (playing) schedule();
+      return;
+    }
+    const fade = clamp((time-config.portalStart)/Math.max(0.1,config.duration-config.portalStart-0.08));
+    const quad = screenQuad(time);
+    const full = [[0,0],[viewportWidth,0],[viewportWidth,viewportHeight],[0,viewportHeight]];
+    const expanded = quad.map((point,i)=>[mix(point[0],full[i][0],expansion),mix(point[1],full[i][1],expansion)]);
+    const length = (a,b)=>Math.hypot(a[0]-b[0],a[1]-b[1]);
+    const w = (length(expanded[0],expanded[1])+length(expanded[3],expanded[2]))/2;
+    const h = (length(expanded[0],expanded[3])+length(expanded[1],expanded[2]))/2;
+    const surface = Math.max(1,viewportWidth*h/w);
+    body.classList.toggle('cullinan-instrument', !config.portalFill && expansion === 0);
+    catalog.style.height = `${surface}px`;
+    catalog.style.transform = project(expanded,surface);
+    catalog.style.opacity = String(expansion > 0 ? 1 : fade);
+    if (expansion === 1) { restore(scene.contains(document.activeElement)); return; }
+    if (playing || finishAt !== null) schedule();
+  }
+  function schedule() { if (active && !raf) raf = requestAnimationFrame(render); }
+  async function start() {
+    wantsPlay = true;
+    if (!active || !ready || playing || document.hidden || finishAt !== null) return;
+    // Set immediately so rapid wheel/click events cannot create overlapping play attempts.
+    playing = true;
+    try {
+      await video.play();
+      if (!active) return;
+      started = true;
+      state('playing'); schedule();
+    } catch (_) {
+      if (!active) return;
+      playing = false;
+      state('ready', 'Натисніть, щоб відтворити відео');
+    }
+  }
+  function pause() {
+    wantsPlay = false; resumeOnVisible = false; playing = false;
+    video.pause(); clearTimeout(stallTimer); state('paused');
+  }
 
-  function hide(node,hidden,fallback) {
-    if(!node)return;
-    if(hidden&&node.contains(document.activeElement))fallback?.focus({preventScroll:true});
-    node.inert=hidden;
-    if(hidden)node.setAttribute('aria-hidden','true');else node.removeAttribute('aria-hidden');
-  }
-  function renderPortal() {
-    if(!ready || !config || released)return;
-    const time=Math.max(0,paintedTime),played=clamp(time/config.duration);
-    const expansion=clamp((progress-FILM_END)/(1-FILM_END));
-    const amount=ease(expansion);
-    const fade=clamp((time-config.portalStart)/Math.max(0.08,config.duration-config.portalStart-1/config.fps));
-    if(intro){intro.style.opacity=String(1-clamp(played/0.25));intro.style.visibility=played>=0.25?'hidden':'visible';}
-    const immersed=played>0.2;
-    scene.style.setProperty('--cullinan-actions',immersed?'0':'1');hide(actions,immersed,skip);
-    body.classList.toggle('cullinan-immersed',immersed);
-    cue.style.opacity=String(1-clamp(played/0.1));
-    body.classList.toggle('cullinan-instrument',!config.portalFill&&expansion===0);
-    const covering=config.portalFill?fade:0;
-    scene.style.setProperty('--cullinan-chrome',String(1-Math.max(amount,covering)));
-    hide(toolbar,amount>=0.98||covering>=0.98,baseSkip);
-    if(time<config.portalStart && expansion===0){catalog.style.opacity='0';return;}
-    const quad=screenQuad(time),full=[[0,0],[viewportWidth,0],[viewportWidth,viewportHeight],[0,viewportHeight]];
-    const expanded=quad.map((p,i)=>[mix(p[0],full[i][0],amount),mix(p[1],full[i][1],amount)]);
-    const length=(a,b)=>Math.hypot(a[0]-b[0],a[1]-b[1]);
-    const w=(length(expanded[0],expanded[1])+length(expanded[3],expanded[2]))/2;
-    const h=(length(expanded[0],expanded[3])+length(expanded[1],expanded[2]))/2;
-    const surface=Math.max(1,viewportWidth*h/w);
-    catalog.style.height=`${surface}px`;catalog.style.transform=project(expanded,surface);
-    catalog.style.opacity=String(expansion>0?1:fade);
-  }
-  function render() {
-    raf=0;if(!active)return;
-    updateTarget();setReleased(progress>=1);seek();renderPortal();
-  }
-  function schedule(){if(active&&!raf)raf=requestAnimationFrame(render);}
-
-  if(upright() && scene.dataset.portraitPoster)video.poster=scene.dataset.portraitPoster;
-  move(document.querySelector('.site-header'),true);move(document.querySelector('.demo-strip'),true);move(document.querySelector('.site-footer'));
-  scene.hidden=false;body.classList.add('cullinan-enhanced');catalog.inert=true;catalog.setAttribute('aria-hidden','true');
-  video.muted=true;video.playsInline=true;video.pause();
-  scene.querySelectorAll('.cullinan-skip').forEach(link=>link.addEventListener('click',e=>{e.preventDefault();restore(true);},{signal:abort.signal}));
-  baseSkip?.addEventListener('click',e=>{e.preventDefault();restore(true);},{signal:abort.signal});
-  window.addEventListener('scroll',schedule,{passive:true,signal:abort.signal});
+  move(document.querySelector('.site-header'), true);
+  move(document.querySelector('.demo-strip'), true);
+  move(document.querySelector('.site-footer'));
+  scene.hidden = false; body.classList.add('cullinan-enhanced');
+  catalog.inert = true; catalog.setAttribute('aria-hidden','true');
+  play.hidden = false; status.hidden = false;
+  video.muted = true; video.playsInline = true;
+  scene.querySelectorAll('.cullinan-skip').forEach(link => link.addEventListener('click',event=>{
+    event.preventDefault(); restore(true);
+  },{signal:abort.signal}));
+  baseSkip?.addEventListener('click',event=>{event.preventDefault();restore(true);},{signal:abort.signal});
+  play.addEventListener('click',()=>{ if (playing) pause(); else start(); },{signal:abort.signal});
+  window.addEventListener('scroll',()=>{
+    if (!active) return;
+    const offset = window.scrollY-sceneTop;
+    // Wheel inertia must not skip the door opening. The visible catalogue link,
+    // Escape and End remain immediate exits, including while loading or paused.
+    if (offset > 8 && !started) start();
+  },{passive:true,signal:abort.signal});
+  window.addEventListener('keydown',event=>{if(event.key==='Escape' || event.key==='End')restore(true);},{signal:abort.signal});
   window.addEventListener('resize',()=>{cancelAnimationFrame(resizeRAF);resizeRAF=requestAnimationFrame(measure);},{passive:true,signal:abort.signal});
-  window.addEventListener('keydown',e=>{if(e.key==='Escape')restore(true);},{signal:abort.signal});
-  motion.addEventListener('change',e=>{if(e.matches)restore(scene.contains(document.activeElement));},{signal:abort.signal});
+  motion.addEventListener('change',event=>{if(event.matches)restore(scene.contains(document.activeElement));},{signal:abort.signal});
   document.addEventListener('visibilitychange',()=>{
-    if(document.hidden){clearTimeout(loadTimer);clearTimeout(seekTimer);}
-    else{if(!ready)armLoadTimeout();if(inFlight)armSeekTimeout();schedule();}
+    if (document.hidden) {
+      resumeOnVisible = playing;
+      if (playing) { playing=false;video.pause();clearTimeout(stallTimer); }
+    } else if (resumeOnVisible) { resumeOnVisible=false;start(); }
   },{signal:abort.signal});
-  video.addEventListener('seeked',commitSeek,{signal:abort.signal});
   video.addEventListener('canplay',()=>{
-    if(!active || !objectURL || !config)return;
-    placeFilm();
-    // Paused media may not present its initial frame until an explicit seek.
-    // Prime one adjacent frame, then the normal queue immediately returns to the scroll target.
-    if(!ready && !primed){primed=true;video.currentTime=1/config.fps;}
-    schedule();
+    if (!active || !objectURL || ready) return;
+    clearTimeout(loadTimer); ready=true; state('ready','Прокрутіть або натисніть'); placeFilm();
+    if (wantsPlay) start();
+  },{signal:abort.signal});
+  video.addEventListener('playing',()=>{clearTimeout(stallTimer);if(active){playing=true;state('playing');schedule();}},{signal:abort.signal});
+  video.addEventListener('waiting',()=>{
+    if (!active || !started || document.hidden) return;
+    clearTimeout(stallTimer);state('waiting','Відновлюємо відтворення…');
+    stallTimer=setTimeout(()=>restore(scene.contains(document.activeElement)),6000);
   },{signal:abort.signal});
   video.addEventListener('error',()=>restore(scene.contains(document.activeElement)),{signal:abort.signal});
-  measure();armLoadTimeout();
+  video.addEventListener('ended',()=>{
+    if (!active) return;
+    playing=false;clearTimeout(stallTimer);play.hidden=true;
+    state('ending'); finishAt=performance.now(); schedule();
+  },{signal:abort.signal});
+  measure();state('loading','Готуємо відео…');
+  loadTimer=setTimeout(()=>restore(),20000);
   fetch(scene.dataset.manifest,{signal:abort.signal,cache:'no-cache'})
     .then(r=>{if(!r.ok)throw Error('Manifest unavailable');return r.json();})
-    .then(data=>{if(active){manifest=data;revision='?v=scroll-20261116-1-'+encodeURIComponent(data.revision||'original');chooseFilm();}})
+    .then(data=>{if(active){manifest=data;revision += '-' + encodeURIComponent(data.revision || 'original');chooseFilm();}})
     .catch(()=>{if(active)restore();});
 })();
